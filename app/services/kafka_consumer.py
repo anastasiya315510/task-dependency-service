@@ -19,6 +19,7 @@ _STARTUP_GRACE_SECONDS: float = 60.0
 _RETRY_BASE_SECONDS: float = 5.0
 _RETRY_MAX_SECONDS: float = 60.0
 _MAX_MESSAGE_BYTES: int = 1 * 1024 * 1024  # 1 MiB; tune via broker max.message.bytes
+_MAX_BACKOFF_SECONDS: float = 300.0  # 5 min; BACKOFF longer than this is unhealthy
 
 
 class RunnerState(enum.Enum):
@@ -80,12 +81,14 @@ class KafkaConsumerRunner:
     def __init__(self) -> None:
         self._state: RunnerState = RunnerState.NOT_STARTED
         self._started_at: float | None = None
+        self._backoff_started_at: float | None = None
 
     @classmethod
     def _create_for_testing(
         cls,
         state: RunnerState,
         started_at: float | None = None,
+        backoff_started_at: float | None = None,
     ) -> "KafkaConsumerRunner":
         """Construct a runner in a specific state for unit tests.
 
@@ -96,14 +99,21 @@ class KafkaConsumerRunner:
         runner = cls()
         runner._state = state
         runner._started_at = started_at
+        runner._backoff_started_at = backoff_started_at
         return runner
 
     def is_healthy(self) -> bool:
-        """Returns False only if the consumer stopped after the startup grace period."""
-        if self._state in (RunnerState.RUNNING, RunnerState.BACKOFF):
+        """Returns False if the consumer stopped past the grace period, or has been in BACKOFF too long."""
+        if self._state is RunnerState.RUNNING:
             return True
         if self._state is RunnerState.NOT_STARTED:
             return True  # run() not yet called — still starting up
+        if self._state is RunnerState.BACKOFF:
+            # Transient backoff (e.g. brief Kafka restart) is healthy.
+            # Persistent backoff beyond the threshold indicates a broken connection.
+            if self._backoff_started_at is None:
+                return True
+            return (time.monotonic() - self._backoff_started_at) < _MAX_BACKOFF_SECONDS
         # STOPPED
         if self._started_at is None:
             return True
@@ -142,6 +152,7 @@ class KafkaConsumerRunner:
             try:
                 await consumer.start()
                 self._state = RunnerState.RUNNING
+                self._backoff_started_at = None  # clear on successful connect
                 retry_delay = _RETRY_BASE_SECONDS
                 logger.info(
                     "KafkaConsumerRunner.run — Kafka consumer started on topic %r",
@@ -191,6 +202,8 @@ class KafkaConsumerRunner:
                     exc,
                     retry_delay,
                 )
+                if self._backoff_started_at is None:
+                    self._backoff_started_at = time.monotonic()
                 self._state = RunnerState.BACKOFF
                 await asyncio.sleep(retry_delay)
                 retry_delay = min(retry_delay * 2, _RETRY_MAX_SECONDS)

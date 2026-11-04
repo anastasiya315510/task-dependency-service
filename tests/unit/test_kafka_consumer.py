@@ -4,7 +4,7 @@ import time
 import pytest
 
 from app.models import ChainResult, Task
-from app.services.kafka_consumer import KafkaConsumerRunner, RunnerState, _STARTUP_GRACE_SECONDS, _process_message
+from app.services.kafka_consumer import KafkaConsumerRunner, RunnerState, _MAX_BACKOFF_SECONDS, _STARTUP_GRACE_SECONDS, _process_message
 from tests.conftest import FakeTaskRepository
 
 pytestmark = pytest.mark.unit
@@ -140,9 +140,18 @@ def test_is_healthy_stopped_past_grace_period():
 
 
 def test_is_healthy_while_in_backoff():
-    """Consumer is considered healthy during a reconnect back-off, even past the grace period."""
+    """Consumer is considered healthy during a recent reconnect back-off."""
     runner = KafkaConsumerRunner._create_for_testing(
         RunnerState.BACKOFF,
-        started_at=time.monotonic() - (_STARTUP_GRACE_SECONDS + 1),
+        backoff_started_at=time.monotonic() - (_MAX_BACKOFF_SECONDS / 2),
     )
     assert runner.is_healthy() is True
+
+
+def test_is_healthy_backoff_past_max_threshold():
+    """Consumer is unhealthy when it has been in BACKOFF longer than the allowed maximum."""
+    runner = KafkaConsumerRunner._create_for_testing(
+        RunnerState.BACKOFF,
+        backoff_started_at=time.monotonic() - (_MAX_BACKOFF_SECONDS + 1),
+    )
+    assert runner.is_healthy() is False

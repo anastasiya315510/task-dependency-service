@@ -1,4 +1,5 @@
 import hmac
+import ipaddress
 from functools import lru_cache
 
 from fastapi import HTTPException, Request, Security, status
@@ -27,7 +28,13 @@ def _get_client_ip(request: Request) -> str:
         # Use the rightmost entry: the proxy appends its own record so the
         # rightmost value is the last hop we can verify.  The leftmost entry
         # is client-controlled and must not be trusted.
-        return forwarded_for.split(",")[-1].strip()
+        candidate = forwarded_for.split(",")[-1].strip()
+        try:
+            ipaddress.ip_address(candidate)
+            return candidate
+        except ValueError:
+            # Malformed or empty entry — fall through to socket IP.
+            pass
     return socket_ip
 
 

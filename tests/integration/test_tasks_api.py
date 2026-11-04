@@ -89,9 +89,8 @@ async def test_get_task_returns_503_when_mongo_unavailable(
     async def broken_find(task_id: str):
         raise PyMongoError("connection refused")
 
-    fake_repo.find_by_id = broken_find  # type: ignore[method-assign]
-
-    response = await api_client.get("/tasks/t1")
+    with patch.object(fake_repo, "find_by_id", broken_find):
+        response = await api_client.get("/tasks/t1")
 
     assert response.status_code == 503
 
@@ -161,9 +160,8 @@ async def test_get_chain_returns_503_when_mongo_raises(
     async def broken_find_ancestor_chain(task_id: str, max_depth: int):
         raise PyMongoError("connection refused")
 
-    fake_repo.find_ancestor_chain = broken_find_ancestor_chain  # type: ignore[method-assign]
-
-    response = await api_client.get("/tasks/t1/chain")
+    with patch.object(fake_repo, "find_ancestor_chain", broken_find_ancestor_chain):
+        response = await api_client.get("/tasks/t1/chain")
 
     assert response.status_code == 503
 
@@ -234,6 +232,18 @@ async def test_api_key_correct_returns_200(api_client: AsyncClient, fake_repo: F
     with patch.object(settings, "api_key", SecretStr("test-secret")):
         response = await api_client.get("/tasks/t1", headers={"X-API-Key": "test-secret"})
     assert response.status_code == 200
+
+
+# --- Request ID ---
+
+async def test_request_id_truncated_to_max_length(api_client: AsyncClient, fake_repo: FakeTaskRepository):
+    fake_repo._tasks["t1"] = Task(id="t1", title="Root", parent_task_id=None)
+    long_id = "x" * 100
+
+    response = await api_client.get("/tasks/t1", headers={"X-Request-ID": long_id})
+
+    assert response.status_code == 200
+    assert len(response.headers["X-Request-ID"]) == 64
 
 
 # --- Rate limiting ---

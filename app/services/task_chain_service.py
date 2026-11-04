@@ -30,7 +30,7 @@ class TaskChainService:
 
         result = await self._repo.find_ancestor_chain(task_id, MAX_CHAIN_DEPTH)
         if result is None:
-            logger.info("get_chain %r — task not found", task_id)
+            logger.debug("get_chain %r — task not found", task_id)
             return None
 
         logger.info(

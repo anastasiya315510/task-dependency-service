@@ -1,5 +1,6 @@
 import json
 import logging
+from typing import Awaitable, cast
 
 import redis.asyncio as aioredis
 from pydantic import ValidationError
@@ -22,6 +23,7 @@ class TaskChainCacheService:
         self._redis = redis_client
 
     def _key(self, task_id: str) -> str:
+        """Redis key for the cached chain: ``tds:chain:{task_id}``."""
         return f"{_CACHE_NS}:{task_id}"
 
     def _descendant_chains_key(self, task_id: str) -> str:
@@ -89,7 +91,7 @@ class TaskChainCacheService:
         """Delete task_id's chain and the cached chains of every task that is a descendant of task_id."""
         try:
             member_key = self._descendant_chains_key(task_id)
-            chain_ids: set[str] = await self._redis.smembers(member_key)  # type: ignore[misc]
+            chain_ids: set[str] = await cast(Awaitable[set[str]], self._redis.smembers(member_key))
             keys = [self._key(task_id), member_key]
             for cid in chain_ids:
                 keys.append(self._key(cid))

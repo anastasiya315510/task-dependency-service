@@ -2,6 +2,7 @@ import asyncio
 import logging
 import uuid
 from contextlib import asynccontextmanager
+from typing import Any, cast
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
@@ -56,7 +57,7 @@ async def lifespan(_app: FastAPI):
 
 app = FastAPI(title="Task Dependency Service", lifespan=lifespan)
 app.state.limiter = limiter
-app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)  # type: ignore[arg-type]
+app.add_exception_handler(RateLimitExceeded, cast(Any, _rate_limit_exceeded_handler))
 app.include_router(health_router)
 app.include_router(tasks_router)
 
@@ -82,6 +83,6 @@ async def request_id_middleware(request: Request, call_next):
 
 
 @app.exception_handler(PyMongoError)
-async def mongo_error_handler(_request, exc: PyMongoError):
-    logger.error("MongoDB unavailable: %s", exc)
+async def mongo_error_handler(_request: Request, exc: PyMongoError):
+    logger.error("MongoDB unavailable on %s %s: %s", _request.method, _request.url, exc)
     return JSONResponse(status_code=503, content={"detail": "Service temporarily unavailable"})

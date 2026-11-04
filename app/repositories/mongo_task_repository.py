@@ -76,7 +76,7 @@ class MongoTaskRepository:
             # id projected explicitly for clarity; only parent_task_id is used from root_doc.
             {"$project": {"id": 1, "parent_task_id": 1, "_ancestors": 1, "_id": 0}},
         ]
-        cursor = self._collection.aggregate(pipeline)
+        cursor = self._collection.aggregate(pipeline)  # type: ignore[arg-type]
         docs = await cursor.to_list(length=1)
         if not docs:
             logger.debug("find_ancestor_chain %r — task not found", task_id)
