@@ -38,9 +38,10 @@ async def lifespan(_app: FastAPI):
             get_tasks_collection().create_index("id", unique=True),
             timeout=10.0,
         )
-    except asyncio.TimeoutError:
-        logger.error("MongoDB index creation timed out — continuing startup")
-    logger.info("MongoDB index on 'id' ensured")
+    except (asyncio.TimeoutError, PyMongoError) as exc:
+        logger.error("MongoDB index creation failed — continuing startup: %s", exc)
+    else:
+        logger.info("MongoDB index on 'id' ensured")
     task = asyncio.create_task(
         runner.run(get_task_repository, get_cache_service)
     )

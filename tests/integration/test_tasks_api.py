@@ -32,6 +32,12 @@ def _reset_rate_limiter():
     storage = MemoryStorage()
     limiter._storage = storage
     limiter._limiter.storage = storage
+    # Reset the dead-storage flag so slowapi doesn't route to _fallback_storage
+    # instead of our fresh MemoryStorage. No-op with memory:// (flag stays False),
+    # but required when RATE_LIMIT_STORAGE_URI=redis://... is set locally and Redis
+    # is unreachable — without this, counter state bleeds across tests.
+    if hasattr(limiter, "_storage_dead"):
+        limiter._storage_dead = False
 
 
 async def test_get_task_returns_task(api_client: AsyncClient, fake_repo: FakeTaskRepository):

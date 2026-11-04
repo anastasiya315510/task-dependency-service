@@ -42,6 +42,16 @@ class Settings(BaseSettings):
     #   RATE_LIMIT_STORAGE_URI=redis://localhost:6379
     rate_limit_storage_uri: str = "memory://"
 
+    @field_validator("rate_limit_storage_uri")
+    @classmethod
+    def validate_rate_limit_uri(cls, v: str) -> str:
+        allowed = ("memory://", "redis://", "rediss://", "redis+sentinel://")
+        if not any(v.startswith(p) for p in allowed):
+            raise ValueError(
+                f"rate_limit_storage_uri must start with one of {allowed}, got {v!r}"
+            )
+        return v
+
     # IPs of trusted reverse proxies that may set X-Forwarded-For.
     # Leave empty (default) for direct deployments. Set to your load-balancer's
     # IP when running behind a proxy so rate limiting uses the real client IP.
