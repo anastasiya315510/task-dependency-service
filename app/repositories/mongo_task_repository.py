@@ -1,4 +1,5 @@
 import logging
+from typing import Any
 
 from motor.motor_asyncio import AsyncIOMotorCollection
 from pydantic import ValidationError
@@ -58,7 +59,7 @@ class MongoTaskRepository:
         """
         if max_depth <= 0:
             raise ValueError(f"max_depth must be >= 1, got {max_depth}")
-        pipeline = [
+        pipeline: list[dict[str, Any]] = [
             {"$match": {"id": task_id}},
             {
                 "$graphLookup": {

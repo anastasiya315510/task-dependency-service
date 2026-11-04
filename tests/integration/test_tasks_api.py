@@ -13,6 +13,15 @@ from tests.conftest import FakeTaskRepository
 pytestmark = pytest.mark.integration
 
 
+@pytest.fixture(autouse=True)
+def _reset_rate_limiter():
+    """Reset the in-memory rate-limit counter before each test so tests are isolated."""
+    from app.dependencies import limiter
+    storage = getattr(limiter, "_storage", None)
+    if storage is not None and hasattr(storage, "reset"):
+        storage.reset()
+
+
 async def test_get_task_returns_task(api_client: AsyncClient, fake_repo: FakeTaskRepository):
     fake_repo._tasks["t1"] = Task(id="t1", title="Root", parent_task_id=None)
 
@@ -80,7 +89,7 @@ async def test_get_task_returns_503_when_mongo_unavailable(
     async def broken_find(task_id: str):
         raise PyMongoError("connection refused")
 
-    fake_repo.find_by_id = broken_find
+    fake_repo.find_by_id = broken_find  # type: ignore[method-assign]
 
     response = await api_client.get("/tasks/t1")
 
@@ -152,7 +161,7 @@ async def test_get_chain_returns_503_when_mongo_raises(
     async def broken_find_ancestor_chain(task_id: str, max_depth: int):
         raise PyMongoError("connection refused")
 
-    fake_repo.find_ancestor_chain = broken_find_ancestor_chain
+    fake_repo.find_ancestor_chain = broken_find_ancestor_chain  # type: ignore[method-assign]
 
     response = await api_client.get("/tasks/t1/chain")
 
@@ -225,3 +234,16 @@ async def test_api_key_correct_returns_200(api_client: AsyncClient, fake_repo: F
     with patch.object(settings, "api_key", SecretStr("test-secret")):
         response = await api_client.get("/tasks/t1", headers={"X-API-Key": "test-secret"})
     assert response.status_code == 200
+
+
+# --- Rate limiting ---
+
+async def test_rate_limit_exceeded_returns_429(api_client: AsyncClient, fake_repo: FakeTaskRepository):
+    """Exceeding the per-minute request limit must return 429."""
+    fake_repo._tasks["t1"] = Task(id="t1", title="Root", parent_task_id=None)
+    # The limit is 120/minute; send one more than that.
+    for _ in range(121):
+        response = await api_client.get("/tasks/t1")
+        if response.status_code == 429:
+            return  # limit hit — test passes
+    assert response.status_code == 429, "Expected 429 after exceeding the rate limit"

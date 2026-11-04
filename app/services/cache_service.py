@@ -45,8 +45,8 @@ class TaskChainCacheService:
             logger.error("Corrupt cache entry for %s: %s — self-healing", task_id, exc)
             try:
                 await self.invalidate(task_id)
-            except Exception:
-                pass
+            except RedisError:
+                pass  # already logged by invalidate()
         return None
 
     @log_call
@@ -89,7 +89,7 @@ class TaskChainCacheService:
         """Delete task_id's chain and the cached chains of every task that is a descendant of task_id."""
         try:
             member_key = self._descendant_chains_key(task_id)
-            chain_ids: set[str] = await self._redis.smembers(member_key)
+            chain_ids: set[str] = await self._redis.smembers(member_key)  # type: ignore[misc]
             keys = [self._key(task_id), member_key]
             for cid in chain_ids:
                 keys.append(self._key(cid))

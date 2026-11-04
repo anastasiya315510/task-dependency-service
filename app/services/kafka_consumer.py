@@ -3,12 +3,13 @@ import enum
 import json
 import logging
 import time
+from collections.abc import Callable
 
 from aiokafka import AIOKafkaConsumer
-from aiokafka.errors import KafkaError
 from pydantic import ValidationError
 
 from app.config import settings
+from app.log_call import _sanitize
 from app.models import Task
 from app.repositories.protocols import TaskChainCache, TaskRepository
 
@@ -42,13 +43,13 @@ async def _process_message(raw: bytes, repo: TaskRepository, cache: TaskChainCac
     # isinstance check catches non-string IDs (e.g. 0, false) that would pass a falsy test
     # but fail Pydantic validation, swallowing a producer bug with no actionable error.
     if not isinstance(doc.get("id"), str) or not doc["id"]:
-        logger.error("_process_message — missing or non-string 'id': %s", doc)
+        logger.error("_process_message — missing or non-string 'id': %s", _sanitize(doc))
         return
 
     try:
         task = Task(**{k: v for k, v in doc.items() if k in Task.model_fields})
     except (ValidationError, TypeError) as exc:
-        logger.error("_process_message — invalid task document, skipping: %s — %s", doc, exc)
+        logger.error("_process_message — invalid task document, skipping: %s — %s", _sanitize(doc), exc)
         return
 
     logger.info("_process_message — processing task %r", task.id)
@@ -108,10 +109,21 @@ class KafkaConsumerRunner:
             return True
         return (time.monotonic() - self._started_at) < _STARTUP_GRACE_SECONDS
 
-    async def run(self, repo: TaskRepository, cache: TaskChainCache) -> None:
+    async def run(
+        self,
+        get_repo: Callable[[], TaskRepository],
+        get_cache: Callable[[], TaskChainCache],
+    ) -> None:
         # Record startup time once — drives the health-check grace period.
         if self._started_at is None:
             self._started_at = time.monotonic()
+
+        # Resolve dependencies here rather than at task-creation time so that
+        # test dependency overrides (applied after the lifespan fixture starts)
+        # are honoured, and so that the caller is not forced to have already
+        # initialised the singletons before passing them in.
+        repo = get_repo()
+        cache = get_cache()
 
         retry_delay = _RETRY_BASE_SECONDS
         while True:

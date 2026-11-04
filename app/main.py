@@ -23,7 +23,7 @@ from app.services.kafka_consumer import KafkaConsumerRunner
 configure_logging(settings.log_level, settings.log_format)
 logger = logging.getLogger(__name__)
 
-_SHUTDOWN_TIMEOUT = 10.0  # seconds to wait for in-flight Kafka message to finish
+_SHUTDOWN_TIMEOUT = float(settings.shutdown_timeout_seconds)
 _REQUEST_ID_MAX_LEN = 64
 
 
@@ -35,7 +35,7 @@ async def lifespan(_app: FastAPI):
     await get_tasks_collection().create_index("id", unique=True, background=True)
     logger.info("MongoDB index on 'id' ensured")
     task = asyncio.create_task(
-        runner.run(get_task_repository(), get_cache_service())
+        runner.run(get_task_repository, get_cache_service)
     )
     await asyncio.sleep(0)  # yield to event loop so the consumer task starts
     yield
@@ -56,7 +56,7 @@ async def lifespan(_app: FastAPI):
 
 app = FastAPI(title="Task Dependency Service", lifespan=lifespan)
 app.state.limiter = limiter
-app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)  # type: ignore[arg-type]
 app.include_router(health_router)
 app.include_router(tasks_router)
 

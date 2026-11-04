@@ -15,6 +15,11 @@ class Settings(BaseSettings):
     kafka_topic: str = "tasks.events"
     kafka_consumer_group: str = "task-dependency-service"
 
+    # Seconds to wait for an in-flight Kafka message to finish processing during
+    # graceful shutdown. Increase this if MongoDB upserts can take longer than
+    # the default under load (e.g. during a replica-set election).
+    shutdown_timeout_seconds: int = 30
+
     cache_chain_ttl_seconds: int = 3600  # complete chains: 1 hour
     cache_incomplete_chain_ttl_seconds: int = 30  # incomplete chains: 30 seconds
 

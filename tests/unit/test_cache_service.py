@@ -41,7 +41,7 @@ async def test_get_returns_none_when_key_missing(cache, mock_redis):
 async def test_get_returns_deserialized_tasks(cache, mock_redis):
     tasks = [Task(id="t1", title="Root", parent_task_id=None)]
     payload = json.dumps({"chain": [t.model_dump(mode="json") for t in tasks], "complete": True, "cycle": False})
-    mock_redis.get.return_value = payload.encode()
+    mock_redis.get.return_value = payload
 
     result = await cache.get("t1")
 
@@ -60,14 +60,14 @@ async def test_get_returns_none_on_redis_error(cache, mock_redis):
 
 
 async def test_get_returns_none_on_corrupt_cache_entry(cache, mock_redis):
-    mock_redis.get.return_value = b"not-json{{{"
+    mock_redis.get.return_value = "not-json{{{"
 
     assert await cache.get("t1") is None
 
 
 async def test_get_self_heals_corrupt_cache_entry(cache, mock_redis):
     """A corrupt entry must be deleted so it doesn't silently block future writes."""
-    mock_redis.get.return_value = b"not-json{{{"
+    mock_redis.get.return_value = "not-json{{{"
 
     await cache.get("t1")
 
@@ -78,7 +78,7 @@ async def test_get_self_heals_corrupt_cache_entry(cache, mock_redis):
 
 async def test_get_self_heals_on_missing_key_in_payload(cache, mock_redis):
     """Valid JSON missing the 'chain' key triggers self-heal."""
-    mock_redis.get.return_value = json.dumps({"complete": True}).encode()
+    mock_redis.get.return_value = json.dumps({"complete": True})
 
     result = await cache.get("t1")
 
@@ -201,7 +201,7 @@ async def test_set_skips_members_index_for_incomplete_chain(cache, mock_redis):
 
 async def test_get_self_heals_on_valid_json_invalid_task_schema(cache, mock_redis):
     """Valid JSON that doesn't match Task schema (missing required 'title') triggers self-heal."""
-    mock_redis.get.return_value = json.dumps({"chain": [{"id": "t1"}], "complete": True, "cycle": False}).encode()
+    mock_redis.get.return_value = json.dumps({"chain": [{"id": "t1"}], "complete": True, "cycle": False})
 
     result = await cache.get("t1")
 
