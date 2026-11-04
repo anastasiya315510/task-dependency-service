@@ -1,0 +1,366 @@
+{
+  "info": {
+    "name": "Task Dependency Service",
+    "description": "Covers all acceptance criteria for TDS-142.\n\n**Before running:** seed tasks into the service via Kafka:\n\n    python scripts/produce_tasks.py\n\nThis publishes three tasks — t1 (root) → t2 (middle) → t3 (leaf) — to the tasks.events topic. The running service consumes them into MongoDB.\n\nSet the `baseUrl` collection variable to the port the service is listening on (default http://localhost:8001).",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:8001"
+    }
+  ],
+  "item": [
+
+    {
+      "name": "AC1 — Kafka-ingested task can be looked up",
+      "description": "A task that entered through the Kafka stream can afterwards be retrieved by ID.\n\nPre-condition: run `python scripts/produce_tasks.py`.",
+      "item": [
+        {
+          "name": "GET /tasks/t1 — root task ingested from Kafka",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/tasks/t1"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('Returns the correct task', () => {",
+                  "    const body = pm.response.json();",
+                  "    pm.expect(body.id).to.eql('t1');",
+                  "    pm.expect(body.title).to.be.a('string');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "AC2 — Full ordered dependency chain",
+      "description": "For any task, retrieve the full ordered chain from immediate dependency up to the root.",
+      "item": [
+        {
+          "name": "GET /tasks/t3/chain — expects [t2, t1]",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/tasks/t3/chain"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('Chain has two entries', () => {",
+                  "    pm.expect(pm.response.json()).to.have.lengthOf(2);",
+                  "});",
+                  "pm.test('First entry is immediate dependency t2', () => {",
+                  "    pm.expect(pm.response.json()[0].id).to.eql('t2');",
+                  "});",
+                  "pm.test('Second entry is root t1', () => {",
+                  "    pm.expect(pm.response.json()[1].id).to.eql('t1');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /tasks/t2/chain — expects [t1]",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/tasks/t2/chain"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('Chain has one entry', () => {",
+                  "    pm.expect(pm.response.json()).to.have.lengthOf(1);",
+                  "});",
+                  "pm.test('Entry is t1', () => {",
+                  "    pm.expect(pm.response.json()[0].id).to.eql('t1');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "AC3 — Root task returns empty chain",
+      "description": "A task with no dependencies returns an empty array, not an error.",
+      "item": [
+        {
+          "name": "GET /tasks/t1/chain — expects []",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/tasks/t1/chain"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('Chain is empty array', () => {",
+                  "    pm.expect(pm.response.json()).to.eql([]);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "AC4 — Non-existent task returns 404",
+      "description": "Requesting a task or chain that does not exist gives a clear not-found response.",
+      "item": [
+        {
+          "name": "GET /tasks/no-such-task — expects 404",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/tasks/no-such-task"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('404 Not Found', () => pm.response.to.have.status(404));",
+                  "pm.test('detail is Task not found', () => {",
+                  "    pm.expect(pm.response.json().detail).to.eql('Task not found');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /tasks/no-such-task/chain — expects 404",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/tasks/no-such-task/chain"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('404 Not Found', () => pm.response.to.have.status(404));",
+                  "pm.test('detail is Task not found', () => {",
+                  "    pm.expect(pm.response.json().detail).to.eql('Task not found');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "AC5 — Order-independent arrival",
+      "description": "A child task that arrived before its parent returns a partial chain until the parent is ingested; afterwards the full chain is correct.\n\nTo demonstrate:\n1. Produce only the child first:\n       python -c \"\nimport asyncio, json\nfrom aiokafka import AIOKafkaProducer\nasync def run():\n    p = AIOKafkaProducer(bootstrap_servers='localhost:9092')\n    await p.start()\n    await p.send_and_wait('tasks.events', json.dumps({'id':'t-child','title':'Child','parent_task_id':'t-parent-late'}).encode())\n    await p.stop()\nasyncio.run(run())\"\n2. Send the two requests below — first expects [], chain is partial.\n3. Then produce the parent:\n       python -c \"...(same as above but id='t-parent-late', parent_task_id=None)\"\n4. Send the last request — expects [t-parent-late].",
+      "item": [
+        {
+          "name": "GET /tasks/t-child/chain — before parent exists, expects []",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/tasks/t-child/chain"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('200 OK — no error even though parent is missing', () => pm.response.to.have.status(200));",
+                  "pm.test('Partial chain is empty', () => {",
+                  "    pm.expect(pm.response.json()).to.eql([]);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /tasks/t-child/chain — after parent arrives, expects [t-parent-late]",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/tasks/t-child/chain"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('Chain now contains the parent', () => {",
+                  "    const chain = pm.response.json();",
+                  "    pm.expect(chain).to.have.lengthOf(1);",
+                  "    pm.expect(chain[0].id).to.eql('t-parent-late');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "AC6 — Idempotency (duplicate events)",
+      "description": "Sending the same task event more than once must not duplicate or corrupt the task.\n\nPre-condition: run `python scripts/produce_tasks.py` twice to replay all events, then send the requests below.",
+      "item": [
+        {
+          "name": "GET /tasks/t1 — data intact after replay",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/tasks/t1"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('Task data is not corrupted', () => {",
+                  "    const body = pm.response.json();",
+                  "    pm.expect(body.id).to.eql('t1');",
+                  "    pm.expect(body.title).to.eql('Root Task');",
+                  "    pm.expect(body.parent_task_id).to.be.null;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /tasks/t3/chain — chain intact after replay",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/tasks/t3/chain"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('Chain still has exactly two entries', () => {",
+                  "    pm.expect(pm.response.json()).to.have.lengthOf(2);",
+                  "});",
+                  "pm.test('Order is still correct', () => {",
+                  "    const chain = pm.response.json();",
+                  "    pm.expect(chain[0].id).to.eql('t2');",
+                  "    pm.expect(chain[1].id).to.eql('t1');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "AC7 — Performance (caching)",
+      "description": "Two identical chain requests return the same result. The second is served from Redis cache.",
+      "item": [
+        {
+          "name": "GET /tasks/t3/chain — first request (cache miss)",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/tasks/t3/chain"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.collectionVariables.set('cachedChain', JSON.stringify(pm.response.json()));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /tasks/t3/chain — second request (cache hit)",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/tasks/t3/chain"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('Result matches first response', () => {",
+                  "    const first = pm.collectionVariables.get('cachedChain');",
+                  "    pm.expect(JSON.stringify(pm.response.json())).to.eql(first);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "AC8 — Graceful degradation",
+      "description": "The service must respond correctly when a supporting component is down.",
+      "item": [
+        {
+          "name": "GET /tasks/t3/chain — Redis down, falls back to MongoDB",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/tasks/t3/chain",
+            "description": "Pre-condition: stop Redis with `docker stop <redis-container>`.\nPost-condition: restart Redis with `docker start <redis-container>`.\n\nExpect 200 with correct chain — not a 500."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('200 OK even without Redis', () => pm.response.to.have.status(200));",
+                  "pm.test('Chain data is still correct', () => {",
+                  "    const chain = pm.response.json();",
+                  "    pm.expect(chain).to.have.lengthOf(2);",
+                  "    pm.expect(chain[0].id).to.eql('t2');",
+                  "    pm.expect(chain[1].id).to.eql('t1');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /tasks/t1 — MongoDB down returns 503",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/tasks/t1",
+            "description": "Pre-condition: stop MongoDB with `docker stop <mongo-container>`.\nPost-condition: restart MongoDB.\n\nExpect 503, not an unhandled 500."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('503 when MongoDB is down', () => pm.response.to.have.status(503));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
