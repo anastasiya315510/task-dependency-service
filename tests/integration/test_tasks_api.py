@@ -15,11 +15,13 @@ pytestmark = pytest.mark.integration
 
 @pytest.fixture(autouse=True)
 def _reset_rate_limiter():
-    """Reset the in-memory rate-limit counter before each test so tests are isolated."""
+    """Use in-memory rate-limit storage during tests (no Redis dependency).
+    A fresh MemoryStorage instance is created before each test so counters
+    never bleed across tests."""
+    from limits.storage import MemoryStorage
     from app.dependencies import limiter
-    storage = getattr(limiter, "_storage", None)
-    if storage is not None and hasattr(storage, "reset"):
-        storage.reset()
+
+    limiter._storage = MemoryStorage()
 
 
 async def test_get_task_returns_task(api_client: AsyncClient, fake_repo: FakeTaskRepository):
