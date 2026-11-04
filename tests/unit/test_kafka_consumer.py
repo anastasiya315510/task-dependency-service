@@ -205,7 +205,6 @@ async def test_run_cancel_while_running(fake_repo, fake_cache):
         yield  # noqa: unreachable — marks this as an async generator
 
     mock_consumer = AsyncMock()
-    mock_consumer.stop = AsyncMock()
     mock_consumer.__aiter__ = MagicMock(return_value=_blocks_until_cancelled())
 
     runner = KafkaConsumerRunner()
@@ -216,8 +215,13 @@ async def test_run_cancel_while_running(fake_repo, fake_cache):
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
 
+    # _state: is_healthy() alone can't distinguish STOPPED-within-grace from
+    # STOPPED-past-grace without time manipulation — assert the field directly.
     assert runner._state == RunnerState.STOPPED
     mock_consumer.stop.assert_awaited()
+    # _started_at: verifies run() recorded startup time so the health grace period
+    # activates; the behavioral consequence (is_healthy() → False after expiry)
+    # would require mocking time.monotonic, so we assert the field directly.
     assert runner._started_at is not None
 
 
@@ -228,7 +232,6 @@ async def test_run_error_enters_backoff_then_stops(fake_repo, fake_cache):
         Exception("Kafka unavailable"),
         asyncio.CancelledError(),
     ]
-    mock_consumer.stop = AsyncMock()
 
     runner = KafkaConsumerRunner()
     with patch("app.services.kafka_consumer.AIOKafkaConsumer", return_value=mock_consumer):

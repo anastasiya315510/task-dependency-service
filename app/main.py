@@ -35,7 +35,7 @@ async def lifespan(_app: FastAPI):
     _app.state.kafka_runner = runner
     try:
         await asyncio.wait_for(
-            get_tasks_collection().create_index("id", unique=True, background=True),
+            get_tasks_collection().create_index("id", unique=True),
             timeout=10.0,
         )
     except asyncio.TimeoutError:

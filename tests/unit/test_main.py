@@ -24,7 +24,7 @@ async def test_lifespan_creates_mongo_index_on_startup():
         async with lifespan(FastAPI()):
             pass
 
-        mock_col.return_value.create_index.assert_awaited_once_with("id", unique=True, background=True)
+        mock_col.return_value.create_index.assert_awaited_once_with("id", unique=True)
 
 
 async def test_lifespan_starts_kafka_consumer_on_startup():

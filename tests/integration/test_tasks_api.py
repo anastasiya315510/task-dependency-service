@@ -19,10 +19,12 @@ def _reset_rate_limiter():
     A fresh MemoryStorage instance is created before each test so counters
     never bleed across tests.
 
-    NOTE: slowapi reads self._storage directly (not via a public API), so we
-    replace the private attribute. If a future slowapi upgrade changes the
-    internal attribute name, this fixture will silently stop working — recheck
-    when upgrading slowapi."""
+    NOTE: slowapi holds the storage reference in five private attributes that
+    all must be replaced so no Redis connection is attempted during tests:
+      _storage, _limiter.storage, _fallback_storage, _fallback_limiter.storage,
+      _storage_dead
+    If a future slowapi upgrade renames or restructures any of these, this
+    fixture will silently stop working — verify all five when upgrading slowapi."""
     from limits.storage import MemoryStorage
     from app.dependencies import limiter
 

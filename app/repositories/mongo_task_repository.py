@@ -90,7 +90,7 @@ class MongoTaskRepository:
         ancestor_docs: list[dict] = [
             d for d in root_doc.get("_ancestors", []) if d.get("id") != task_id
         ]
-        ancestor_docs.sort(key=lambda d: d["_depth"])
+        ancestor_docs.sort(key=lambda d: d.get("_depth", 0))
 
         ancestors: list[Task] = []
         # Seed seen_ids with task_id so a back-edge to the queried task (e.g.
