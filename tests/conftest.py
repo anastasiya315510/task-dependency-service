@@ -1,12 +1,12 @@
-import asyncio
-from unittest.mock import patch
-
+import fakeredis.aioredis
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from app.dependencies import get_task_chain_service, get_task_repository
+from app.dependencies import get_cache_service, get_task_chain_service, get_task_repository
 from app.main import app
-from app.models import Task
+from app.models import ChainResult, Task
+from app.services.cache_service import TaskChainCacheService
+from app.services.kafka_consumer import KafkaConsumerRunner
 from app.services.task_chain_service import TaskChainService
 
 
@@ -17,30 +17,32 @@ class FakeTaskRepository:
     async def find_by_id(self, task_id: str) -> Task | None:
         return self._tasks.get(task_id)
 
-    async def upsert(self, doc: dict) -> None:
-        # Mimic MongoTaskRepository: accepts any dict, ignores unknown fields,
-        # so tests are not broken by extra fields that MongoDB would store fine.
-        known = {k: v for k, v in doc.items() if k in Task.model_fields}
-        self._tasks[doc["id"]] = Task(**known)
+    async def upsert(self, task: Task) -> None:
+        self._tasks[task.id] = task
 
-
-class FakeTaskChainCacheService:
-    def __init__(self):
-        self._store: dict[str, list[Task]] = {}
-
-    async def get(self, task_id: str) -> list[Task] | None:
-        return self._store.get(task_id)
-
-    async def set(self, task_id: str, chain: list[Task]) -> None:
-        self._store[task_id] = chain
-
-    async def invalidate(self, task_id: str) -> None:
-        self._store.pop(task_id, None)
-
-
-async def _kafka_stub() -> None:
-    """Stand-in for the Kafka consumer so tests don't need a broker."""
-    await asyncio.sleep(float("inf"))
+    async def find_ancestor_chain(
+        self, task_id: str, max_depth: int
+    ) -> ChainResult | None:
+        root = self._tasks.get(task_id)
+        if root is None:
+            return None
+        ancestors: list[Task] = []
+        visited: set[str] = {task_id}
+        current_id = root.parent_task_id
+        depth = 0
+        while current_id:
+            if current_id in visited:
+                return ChainResult(ancestors, False, True)
+            if depth >= max_depth:
+                return ChainResult(ancestors, False, False)
+            visited.add(current_id)
+            parent = self._tasks.get(current_id)
+            if parent is None:
+                return ChainResult(ancestors, False, False)
+            ancestors.append(parent)
+            current_id = parent.parent_task_id
+            depth += 1
+        return ChainResult(ancestors, True, False)
 
 
 @pytest.fixture
@@ -49,18 +51,32 @@ def fake_repo() -> FakeTaskRepository:
 
 
 @pytest.fixture
-def fake_cache() -> FakeTaskChainCacheService:
-    return FakeTaskChainCacheService()
+def fake_cache() -> TaskChainCacheService:
+    """Real TaskChainCacheService backed by an in-process fakeredis instance.
+
+    Using the real implementation means invalidation logic is exercised in
+    unit tests, not duplicated in a fake that could drift from production.
+    decode_responses=True mirrors the real client in db.py.
+    """
+    return TaskChainCacheService(fakeredis.aioredis.FakeRedis(decode_responses=True))
 
 
 @pytest.fixture
-async def api_client(fake_repo: FakeTaskRepository, fake_cache: FakeTaskChainCacheService):
+async def api_client(fake_repo: FakeTaskRepository, fake_cache: TaskChainCacheService):
     service = TaskChainService(fake_repo, fake_cache)
     app.dependency_overrides[get_task_repository] = lambda: fake_repo
+    app.dependency_overrides[get_cache_service] = lambda: fake_cache
     app.dependency_overrides[get_task_chain_service] = lambda: service
-    with patch("app.main.consume_forever", _kafka_stub):
+    original_runner = getattr(app.state, "kafka_runner", None)
+    app.state.kafka_runner = KafkaConsumerRunner()
+    try:
         async with AsyncClient(
             transport=ASGITransport(app=app), base_url="http://test"
         ) as client:
             yield client
-    app.dependency_overrides.clear()
+    finally:
+        app.dependency_overrides.clear()
+        if original_runner is not None:
+            app.state.kafka_runner = original_runner
+        elif hasattr(app.state, "kafka_runner"):
+            del app.state.kafka_runner

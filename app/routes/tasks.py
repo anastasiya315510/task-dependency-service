@@ -1,21 +1,22 @@
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException, Path, Response
+from fastapi import APIRouter, Depends, HTTPException, Path, Request, Response
 
-from app.dependencies import get_task_chain_service, get_task_repository
+from app.dependencies import get_task_chain_service, get_task_repository, limiter, require_api_key
 from app.models import Task
-from app.repositories.protocols import TaskRepository
-from app.services.task_chain_service import TaskChainService
+from app.repositories.protocols import TaskChainServiceProtocol, TaskRepository
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/tasks", tags=["tasks"])
+router = APIRouter(prefix="/tasks", tags=["tasks"], dependencies=[Depends(require_api_key)])
 
 _TASK_ID = Path(..., min_length=1, max_length=255, pattern=r"^[a-zA-Z0-9_\-]+$")
 
 
 @router.get("/{task_id}", response_model=Task)
+@limiter.limit("120/minute")
 async def get_task(
+    request: Request,
     task_id: str = _TASK_ID,
     repo: TaskRepository = Depends(get_task_repository),
 ):
@@ -24,28 +25,32 @@ async def get_task(
     if not task:
         logger.warning("GET /tasks/%s — not found", task_id)
         raise HTTPException(status_code=404, detail="Task not found")
-    logger.info("GET /tasks/%s — returning task %r", task_id, task.title)
+    logger.info("GET /tasks/%s — found", task_id)
     return task
 
 
 @router.get("/{task_id}/chain", response_model=list[Task])
+@limiter.limit("60/minute")
 async def get_dependency_chain(
+    request: Request,
     response: Response,
     task_id: str = _TASK_ID,
-    service: TaskChainService = Depends(get_task_chain_service),
+    service: TaskChainServiceProtocol = Depends(get_task_chain_service),
 ):
     logger.info("GET /tasks/%s/chain", task_id)
     result = await service.get_chain(task_id)
     if result is None:
         logger.warning("GET /tasks/%s/chain — task not found", task_id)
         raise HTTPException(status_code=404, detail="Task not found")
-    # Signals whether the full ancestor chain was resolved. False means a parent
-    # task has not yet been ingested — the chain may grow once it arrives.
+    # X-Chain-Complete: false when a parent is missing, depth limit hit, or cycle detected.
     response.headers["X-Chain-Complete"] = str(result.complete).lower()
+    # X-Chain-Cycle: true signals a circular dependency was found in the data.
+    response.headers["X-Chain-Cycle"] = str(result.cycle).lower()
     logger.info(
-        "GET /tasks/%s/chain — returning %d item(s), complete=%s",
+        "GET /tasks/%s/chain — returning %d item(s), complete=%s, cycle=%s",
         task_id,
         len(result.tasks),
         result.complete,
+        result.cycle,
     )
     return result.tasks

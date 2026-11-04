@@ -1,15 +1,22 @@
+import fakeredis.aioredis
 import pytest
 
-from app.models import Task
+from app.models import ChainResult, Task
+from app.services.cache_service import TaskChainCacheService
 from app.services.task_chain_service import MAX_CHAIN_DEPTH, TaskChainService
-from tests.conftest import FakeTaskChainCacheService, FakeTaskRepository
+from tests.conftest import FakeTaskRepository
+
+pytestmark = pytest.mark.unit
 
 
-def _service(tasks: dict[str, Task], cached: dict[str, list[Task]] | None = None):
+def _make_cache() -> TaskChainCacheService:
+    return TaskChainCacheService(fakeredis.aioredis.FakeRedis(decode_responses=True))
+
+
+def _service(tasks: dict[str, Task], cache: TaskChainCacheService | None = None):
     repo = FakeTaskRepository(tasks)
-    cache = FakeTaskChainCacheService()
-    if cached:
-        cache._store.update(cached)
+    if cache is None:
+        cache = _make_cache()
     return TaskChainService(repo, cache), repo, cache
 
 
@@ -53,7 +60,21 @@ async def test_get_chain_stops_safely_on_circular_dependency():
     assert result is not None
     assert len(result.tasks) == 1
     assert result.tasks[0].id == "t2"
-    assert result.complete is True  # loop terminated cleanly, not due to missing parent
+    # A cycle is not a complete chain — it never reached a true root.
+    assert result.complete is False
+    assert result.cycle is True
+
+
+async def test_get_chain_cycle_is_not_cached():
+    tasks = {
+        "t1": Task(id="t1", title="A", parent_task_id="t2"),
+        "t2": Task(id="t2", title="B", parent_task_id="t1"),
+    }
+    service, _, cache = _service(tasks)
+
+    await service.get_chain("t1")
+
+    assert await cache.get("t1") is None
 
 
 async def test_get_chain_returns_partial_chain_when_parent_not_ingested():
@@ -69,8 +90,10 @@ async def test_get_chain_returns_partial_chain_when_parent_not_ingested():
 
 async def test_get_chain_returns_cached_result_without_hitting_repo():
     cached_chain = [Task(id="t1", title="Root", parent_task_id=None)]
-    # t2 is NOT in repo — proves cache is used, not repo
-    service, _, _ = _service({}, cached={"t2": cached_chain})
+    cache = _make_cache()
+    # Pre-populate cache — t2 is NOT in repo, proves cache is used, not repo
+    await cache.set("t2", ChainResult(tasks=cached_chain, complete=True, cycle=False))
+    service, _, _ = _service({}, cache=cache)
 
     result = await service.get_chain("t2")
 
@@ -88,12 +111,17 @@ async def test_get_chain_writes_result_to_cache():
 
     await service.get_chain("t2")
 
-    assert "t2" in cache._store
-    assert cache._store["t2"][0].id == "t1"
+    cached = await cache.get("t2")
+    assert cached is not None
+    assert cached.tasks[0].id == "t1"
+    assert cached.complete is True
+    assert cached.cycle is False
 
 
-async def test_get_chain_does_not_cache_partial_chain():
-    # t2 references t1 but t1 is not ingested yet — chain is partial
+async def test_get_chain_caches_partial_chain_as_incomplete():
+    """Partial chains are cached (marked incomplete) to reduce MongoDB pressure
+    during Kafka ingestion lag. TTL is set on the Redis key but fakeredis does
+    not auto-advance time, so expiry is not asserted here."""
     tasks = {"t2": Task(id="t2", title="Child", parent_task_id="t1-missing")}
     service, _, cache = _service(tasks)
 
@@ -102,11 +130,13 @@ async def test_get_chain_does_not_cache_partial_chain():
     assert result is not None
     assert result.tasks == []
     assert result.complete is False
-    assert "t2" not in cache._store  # must NOT be cached
+    cached = await cache.get("t2")
+    assert cached is not None
+    assert cached.complete is False
 
 
 async def test_get_chain_stops_at_max_depth():
-    """A chain longer than MAX_CHAIN_DEPTH must not hang and must not be cached."""
+    """A chain longer than MAX_CHAIN_DEPTH must not hang; result is cached as incomplete."""
     tasks: dict[str, Task] = {}
     prev_id: str | None = None
     for i in range(MAX_CHAIN_DEPTH + 5):
@@ -120,9 +150,35 @@ async def test_get_chain_stops_at_max_depth():
     result = await service.get_chain(last_id)
 
     assert result is not None
+    # Both FakeTaskRepository and MongoTaskRepository's $graphLookup (maxDepth=max_depth-1)
+    # return exactly max_depth ancestors when the depth limit is hit.
     assert len(result.tasks) == MAX_CHAIN_DEPTH
     assert result.complete is False
-    assert last_id not in cache._store
+    cached = await cache.get(last_id)
+    assert cached is not None
+    assert cached.complete is False
+
+
+async def test_get_chain_cascade_invalidation():
+    """Updating an ancestor must clear cached chains of all its descendants."""
+    tasks = {
+        "t1": Task(id="t1", title="Root", parent_task_id=None),
+        "t2": Task(id="t2", title="Child", parent_task_id="t1"),
+        "t3": Task(id="t3", title="Grandchild", parent_task_id="t2"),
+    }
+    service, _, cache = _service(tasks)
+
+    # Cache chains for t2 and t3
+    await service.get_chain("t2")
+    await service.get_chain("t3")
+    assert await cache.get("t2") is not None
+    assert await cache.get("t3") is not None
+
+    # Invalidating t1 (an ancestor) must clear t2's and t3's chains
+    await cache.invalidate("t1")
+
+    assert await cache.get("t2") is None
+    assert await cache.get("t3") is None
 
 
 # --- Model validation tests ---

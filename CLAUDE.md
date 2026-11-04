@@ -6,7 +6,7 @@ Task Dependency Service — FastAPI service that ingests tasks from Kafka and ex
 
 ## Stack
 
-- Python 3.14 + FastAPI
+- Python 3.12 + FastAPI
 - MongoDB (motor) for persistence
 - Redis for caching dependency chains
 - Kafka (aiokafka) for task event ingestion

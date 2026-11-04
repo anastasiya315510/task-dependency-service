@@ -1,8 +1,16 @@
+from unittest.mock import AsyncMock, patch
+
 import pytest
 from httpx import AsyncClient
+from pydantic import SecretStr
+from pymongo.errors import PyMongoError
 
+from app.config import settings
 from app.models import Task
+from app.services.kafka_consumer import KafkaConsumerRunner
 from tests.conftest import FakeTaskRepository
+
+pytestmark = pytest.mark.integration
 
 
 async def test_get_task_returns_task(api_client: AsyncClient, fake_repo: FakeTaskRepository):
@@ -62,13 +70,13 @@ async def test_get_chain_handles_out_of_order_arrival(api_client: AsyncClient, f
 
     assert response.status_code == 200
     assert response.json() == []  # partial chain, no error
+    assert response.headers["X-Chain-Complete"] == "false"
+    assert response.headers["X-Chain-Cycle"] == "false"
 
 
 async def test_get_task_returns_503_when_mongo_unavailable(
     api_client: AsyncClient, fake_repo: FakeTaskRepository
 ):
-    from pymongo.errors import PyMongoError
-
     async def broken_find(task_id: str):
         raise PyMongoError("connection refused")
 
@@ -123,32 +131,39 @@ async def test_get_chain_complete_header_false_when_parent_missing(
     assert response.headers["X-Chain-Complete"] == "false"
 
 
-@pytest.mark.integration
+async def test_get_chain_cycle_headers(
+    api_client: AsyncClient, fake_repo: FakeTaskRepository
+):
+    fake_repo._tasks["t1"] = Task(id="t1", title="A", parent_task_id="t2")
+    fake_repo._tasks["t2"] = Task(id="t2", title="B", parent_task_id="t1")
+
+    response = await api_client.get("/tasks/t1/chain")
+
+    assert response.status_code == 200
+    assert response.headers["X-Chain-Cycle"] == "true"
+    assert response.headers["X-Chain-Complete"] == "false"
+
+
 async def test_get_chain_returns_503_when_mongo_raises(
     api_client: AsyncClient, fake_repo: FakeTaskRepository
 ):
-    from pymongo.errors import PyMongoError
-
     fake_repo._tasks["t1"] = Task(id="t1", title="Root", parent_task_id=None)
 
-    async def broken_find(task_id: str):
+    async def broken_find_ancestor_chain(task_id: str, max_depth: int):
         raise PyMongoError("connection refused")
 
-    fake_repo.find_by_id = broken_find
+    fake_repo.find_ancestor_chain = broken_find_ancestor_chain
 
     response = await api_client.get("/tasks/t1/chain")
 
     assert response.status_code == 503
 
 
-@pytest.mark.integration
 async def test_health_returns_200_when_all_deps_healthy(api_client: AsyncClient):
-    from unittest.mock import AsyncMock, patch
-
     with (
         patch("app.routes.health.get_tasks_collection") as mock_col,
         patch("app.routes.health.get_redis") as mock_redis,
-        patch("app.routes.health.consumer_is_healthy", return_value=True),
+        patch.object(KafkaConsumerRunner, "is_healthy", return_value=True),
     ):
         mock_col.return_value.database.command = AsyncMock(return_value={"ok": 1})
         mock_redis.return_value.ping = AsyncMock(return_value=True)
@@ -159,15 +174,11 @@ async def test_health_returns_200_when_all_deps_healthy(api_client: AsyncClient)
     assert response.json() == {"status": "ok"}
 
 
-@pytest.mark.integration
 async def test_health_returns_503_when_mongo_unavailable(api_client: AsyncClient):
-    from unittest.mock import AsyncMock, patch
-    from pymongo.errors import PyMongoError
-
     with (
         patch("app.routes.health.get_tasks_collection") as mock_col,
         patch("app.routes.health.get_redis") as mock_redis,
-        patch("app.routes.health.consumer_is_healthy", return_value=True),
+        patch.object(KafkaConsumerRunner, "is_healthy", return_value=True),
     ):
         mock_col.return_value.database.command = AsyncMock(
             side_effect=PyMongoError("unreachable")
@@ -178,3 +189,39 @@ async def test_health_returns_503_when_mongo_unavailable(api_client: AsyncClient
 
     assert response.status_code == 503
     assert "mongodb" in response.json()["detail"]
+
+
+async def test_health_returns_503_when_kafka_consumer_unhealthy(api_client: AsyncClient):
+    with (
+        patch("app.routes.health.get_tasks_collection") as mock_col,
+        patch("app.routes.health.get_redis") as mock_redis,
+        patch.object(KafkaConsumerRunner, "is_healthy", return_value=False),
+    ):
+        mock_col.return_value.database.command = AsyncMock(return_value={"ok": 1})
+        mock_redis.return_value.ping = AsyncMock(return_value=True)
+
+        response = await api_client.get("/health")
+
+    assert response.status_code == 503
+    assert "kafka_consumer" in response.json()["detail"]
+
+
+# --- API key authentication ---
+
+async def test_api_key_absent_returns_401(api_client: AsyncClient):
+    with patch.object(settings, "api_key", SecretStr("test-secret")):
+        response = await api_client.get("/tasks/t1")
+    assert response.status_code == 401
+
+
+async def test_api_key_wrong_returns_401(api_client: AsyncClient):
+    with patch.object(settings, "api_key", SecretStr("test-secret")):
+        response = await api_client.get("/tasks/t1", headers={"X-API-Key": "wrong"})
+    assert response.status_code == 401
+
+
+async def test_api_key_correct_returns_200(api_client: AsyncClient, fake_repo: FakeTaskRepository):
+    fake_repo._tasks["t1"] = Task(id="t1", title="Root", parent_task_id=None)
+    with patch.object(settings, "api_key", SecretStr("test-secret")):
+        response = await api_client.get("/tasks/t1", headers={"X-API-Key": "test-secret"})
+    assert response.status_code == 200

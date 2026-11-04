@@ -4,13 +4,13 @@ from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorCollection
 from app.config import settings
 
 _mongo_client: AsyncIOMotorClient = AsyncIOMotorClient(
-    settings.mongodb_url,
+    settings.mongodb_url.get_secret_value(),
     serverSelectionTimeoutMS=5_000,
     connectTimeoutMS=10_000,
     retryWrites=True,
 )
 _redis_client: redis.Redis = redis.from_url(
-    settings.redis_url,
+    settings.redis_url.get_secret_value(),
     decode_responses=True,
     socket_connect_timeout=5,
     socket_keepalive=True,
