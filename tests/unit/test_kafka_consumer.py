@@ -1,10 +1,19 @@
+import asyncio
 import json
 import time
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from app.models import ChainResult, Task
-from app.services.kafka_consumer import KafkaConsumerRunner, RunnerState, _MAX_BACKOFF_SECONDS, _STARTUP_GRACE_SECONDS, _process_message
+from app.services.kafka_consumer import (
+    KafkaConsumerRunner,
+    RunnerState,
+    _MAX_BACKOFF_SECONDS,
+    _MAX_MESSAGE_BYTES,
+    _STARTUP_GRACE_SECONDS,
+    _process_message,
+)
 from tests.conftest import FakeTaskRepository
 
 pytestmark = pytest.mark.unit
@@ -155,3 +164,67 @@ def test_is_healthy_backoff_past_max_threshold():
         backoff_started_at=time.monotonic() - (_MAX_BACKOFF_SECONDS + 1),
     )
     assert runner.is_healthy() is False
+
+
+def test_is_healthy_backoff_without_timer():
+    """BACKOFF with no timer recorded is healthy — it just entered backoff."""
+    runner = KafkaConsumerRunner._create_for_testing(RunnerState.BACKOFF, backoff_started_at=None)
+    assert runner.is_healthy() is True
+
+
+def test_is_healthy_stopped_without_started_at():
+    """STOPPED before run() was ever called is healthy — still in startup window."""
+    runner = KafkaConsumerRunner._create_for_testing(RunnerState.STOPPED, started_at=None)
+    assert runner.is_healthy() is True
+
+
+async def test_process_message_ignores_oversized_message(fake_repo, fake_cache):
+    """Messages exceeding _MAX_MESSAGE_BYTES must be dropped without raising."""
+    raw = b"x" * (_MAX_MESSAGE_BYTES + 1)
+
+    await _process_message(raw, fake_repo, fake_cache)
+
+    assert fake_repo._tasks == {}
+
+
+async def test_run_cancel_while_running(fake_repo, fake_cache):
+    """Cancelling run() while the consumer is active stops it cleanly."""
+    async def _never_yields():
+        await asyncio.sleep(float("inf"))
+        return
+        yield  # marks this as an async generator
+
+    mock_consumer = AsyncMock()
+    mock_consumer.stop = AsyncMock()
+    mock_consumer.__aiter__ = MagicMock(return_value=_never_yields())
+
+    runner = KafkaConsumerRunner()
+    with patch("app.services.kafka_consumer.AIOKafkaConsumer", return_value=mock_consumer):
+        task = asyncio.create_task(runner.run(lambda: fake_repo, lambda: fake_cache))
+        await asyncio.sleep(0)  # let run() reach the async-for loop
+        await asyncio.sleep(0)
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    assert runner._state == RunnerState.STOPPED
+    mock_consumer.stop.assert_awaited()
+    assert runner._started_at is not None
+    assert runner._backoff_started_at is None  # cleared after successful connect
+
+
+async def test_run_error_enters_backoff_then_stops(fake_repo, fake_cache):
+    """A Kafka startup error triggers BACKOFF; next cancel stops the runner cleanly."""
+    mock_consumer = AsyncMock()
+    mock_consumer.start.side_effect = [
+        Exception("Kafka unavailable"),
+        asyncio.CancelledError(),
+    ]
+    mock_consumer.stop = AsyncMock()
+
+    runner = KafkaConsumerRunner()
+    with patch("app.services.kafka_consumer.AIOKafkaConsumer", return_value=mock_consumer):
+        with patch("asyncio.sleep", new_callable=AsyncMock):  # skip backoff delay
+            await runner.run(lambda: fake_repo, lambda: fake_cache)
+
+    assert runner._state == RunnerState.STOPPED
+    assert runner._backoff_started_at is not None  # was set on first error

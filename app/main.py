@@ -33,7 +33,13 @@ async def lifespan(_app: FastAPI):
     # Set state before any fallible I/O so health checks always find the runner.
     runner = KafkaConsumerRunner()
     _app.state.kafka_runner = runner
-    await get_tasks_collection().create_index("id", unique=True, background=True)
+    try:
+        await asyncio.wait_for(
+            get_tasks_collection().create_index("id", unique=True, background=True),
+            timeout=10.0,
+        )
+    except asyncio.TimeoutError:
+        logger.error("MongoDB index creation timed out — continuing startup")
     logger.info("MongoDB index on 'id' ensured")
     task = asyncio.create_task(
         runner.run(get_task_repository, get_cache_service)
@@ -84,5 +90,5 @@ async def request_id_middleware(request: Request, call_next):
 
 @app.exception_handler(PyMongoError)
 async def mongo_error_handler(_request: Request, exc: PyMongoError):
-    logger.error("MongoDB unavailable on %s %s: %s", _request.method, _request.url, exc)
+    logger.error("MongoDB unavailable on %s %s: %s", _request.method, _request.url.path, exc)
     return JSONResponse(status_code=503, content={"detail": "Service temporarily unavailable"})

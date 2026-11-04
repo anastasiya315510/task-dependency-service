@@ -14,6 +14,8 @@ def _sanitize(value: Any) -> str:
     """
     # Duck-typed check: any object with 'id' and 'title' (e.g. Task) is treated
     # as a domain entity. No import of app.models keeps this module dependency-free.
+    if isinstance(value, bytes):
+        return f"<bytes len={len(value)}>"
     if hasattr(value, "id") and hasattr(value, "title"):
         return f"{type(value).__name__}(id={value.id!r})"
     if isinstance(value, dict) and "id" in value:

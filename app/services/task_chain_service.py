@@ -6,7 +6,7 @@ from app.repositories.protocols import TaskChainCache, TaskRepository
 
 logger = logging.getLogger(__name__)
 
-MAX_CHAIN_DEPTH = 100
+MAX_CHAIN_DEPTH = 100  # Safety cap; prevents runaway $graphLookup on malformed data
 
 
 class TaskChainService:
@@ -25,7 +25,6 @@ class TaskChainService:
         """
         cached = await self._cache.get(task_id)
         if cached is not None:
-            logger.info("get_chain %r — cache hit, %d item(s)", task_id, len(cached.tasks))
             return cached
 
         result = await self._repo.find_ancestor_chain(task_id, MAX_CHAIN_DEPTH)

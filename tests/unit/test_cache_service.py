@@ -170,6 +170,7 @@ async def test_set_uses_pipeline_for_all_writes(cache, mock_redis):
 
     await cache.set("t3", ChainResult(tasks=chain, complete=True, cycle=False))
 
+    mock_redis.pipeline.assert_called_with(transaction=True)
     pipe = mock_redis.pipeline.return_value
     # 1 set + 2×(sadd + expire) = 5 queued commands, all flushed in one execute
     pipe.execute.assert_awaited_once()

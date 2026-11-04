@@ -23,7 +23,7 @@ async def get_task(
     logger.info("GET /tasks/%s", task_id)
     task = await repo.find_by_id(task_id)
     if not task:
-        logger.warning("GET /tasks/%s — not found", task_id)
+        logger.debug("GET /tasks/%s — not found", task_id)
         raise HTTPException(status_code=404, detail="Task not found")
     logger.info("GET /tasks/%s — found", task_id)
     return task
@@ -40,7 +40,7 @@ async def get_dependency_chain(
     logger.info("GET /tasks/%s/chain", task_id)
     result = await service.get_chain(task_id)
     if result is None:
-        logger.warning("GET /tasks/%s/chain — task not found", task_id)
+        logger.debug("GET /tasks/%s/chain — task not found", task_id)
         raise HTTPException(status_code=404, detail="Task not found")
     # X-Chain-Complete: false when a parent is missing, depth limit hit, or cycle detected.
     response.headers["X-Chain-Complete"] = str(result.complete).lower()

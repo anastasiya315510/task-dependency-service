@@ -51,7 +51,7 @@ async def require_api_key(key: str | None = Security(_api_key_header)) -> None:
     configured = settings.api_key
     if configured is None:
         return
-    if key is None or not hmac.compare_digest(key, configured.get_secret_value()):
+    if not hmac.compare_digest(key or "", configured.get_secret_value()):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or missing API key",
