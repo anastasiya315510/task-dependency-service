@@ -15,27 +15,23 @@ pytestmark = pytest.mark.integration
 
 @pytest.fixture(autouse=True)
 def _reset_rate_limiter():
-    """Use in-memory rate-limit storage during tests (no Redis dependency).
-    A fresh MemoryStorage instance is created before each test so counters
-    never bleed across tests.
+    """Reset rate-limit counters before each test so they don't bleed across tests.
 
-    NOTE: slowapi holds the storage reference in five private attributes that
-    all must be replaced so no Redis connection is attempted during tests:
-      _storage, _limiter.storage, _fallback_storage, _fallback_limiter.storage,
-      _storage_dead
-    If a future slowapi upgrade renames or restructures any of these, this
-    fixture will silently stop working — verify all five when upgrading slowapi."""
+    The limiter uses memory:// storage by default (RATE_LIMIT_STORAGE_URI, see
+    config.py), so no Redis connection is needed in CI or local development.
+    We swap the storage object for a fresh MemoryStorage each test rather than
+    calling storage.reset() so this fixture is safe regardless of which backend
+    is configured in the environment.
+
+    NOTE: slowapi exposes storage via private attributes; if a future upgrade
+    renames them this fixture will silently stop working — recheck when
+    upgrading slowapi."""
     from limits.storage import MemoryStorage
     from app.dependencies import limiter
 
-    # slowapi holds the storage reference in three places; all must be replaced
-    # so no Redis connection is attempted during tests.
     storage = MemoryStorage()
     limiter._storage = storage
     limiter._limiter.storage = storage
-    limiter._fallback_storage = storage
-    limiter._fallback_limiter.storage = storage
-    limiter._storage_dead = False
 
 
 async def test_get_task_returns_task(api_client: AsyncClient, fake_repo: FakeTaskRepository):

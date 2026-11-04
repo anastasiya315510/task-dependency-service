@@ -61,12 +61,11 @@ async def require_api_key(key: str | None = Security(_api_key_header)) -> None:
 
 limiter = Limiter(
     key_func=_get_client_ip,
-    storage_uri=settings.redis_url.get_secret_value(),
-    # Fall back to in-memory when Redis is unreachable (dev, CI, Redis restart).
-    # In production all replicas share the Redis counter, enforcing the limit
-    # cluster-wide. Without this, each process tracks its own counter and the
-    # effective limit scales with replica count.
-    in_memory_fallback_enabled=True,
+    storage_uri=settings.rate_limit_storage_uri,
+    # Enable in-memory fallback when using Redis storage so a Redis restart
+    # or connection blip doesn't block requests entirely.
+    # With the default memory:// URI (dev/CI), this flag has no effect.
+    in_memory_fallback_enabled=settings.rate_limit_storage_uri.startswith("redis"),
 )
 
 

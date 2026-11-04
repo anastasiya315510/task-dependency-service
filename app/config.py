@@ -35,6 +35,13 @@ class Settings(BaseSettings):
     # Set to "json" in production for structured log ingestion (ELK, CloudWatch, etc.)
     log_format: Literal["text", "json"] = "text"
 
+    # Storage URI for the rate limiter.
+    # Defaults to in-process memory — counters are not shared across replicas
+    # but no external dependency is needed (safe for CI and local development).
+    # For production cluster-wide enforcement, set to the same Redis instance:
+    #   RATE_LIMIT_STORAGE_URI=redis://localhost:6379
+    rate_limit_storage_uri: str = "memory://"
+
     # IPs of trusted reverse proxies that may set X-Forwarded-For.
     # Leave empty (default) for direct deployments. Set to your load-balancer's
     # IP when running behind a proxy so rate limiting uses the real client IP.
