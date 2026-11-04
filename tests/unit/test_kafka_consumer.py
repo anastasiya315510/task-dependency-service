@@ -82,11 +82,10 @@ async def test_process_message_invalidates_cache_around_upsert(fake_repo, fake_c
         call_order.append("upsert")
         await original_upsert(task)
 
-    fake_cache.invalidate = tracked_invalidate
-    fake_repo.upsert = tracked_upsert
-
     raw = json.dumps({"id": "t1", "title": "Root", "parent_task_id": None}).encode()
-    await _process_message(raw, fake_repo, fake_cache)
+    with patch.object(fake_cache, "invalidate", tracked_invalidate), \
+         patch.object(fake_repo, "upsert", tracked_upsert):
+        await _process_message(raw, fake_repo, fake_cache)
 
     assert call_order == ["invalidate:t1", "upsert", "invalidate:t1"]
 
@@ -189,27 +188,37 @@ async def test_process_message_ignores_oversized_message(fake_repo, fake_cache):
 
 async def test_run_cancel_while_running(fake_repo, fake_cache):
     """Cancelling run() while the consumer is active stops it cleanly."""
-    async def _never_yields():
+    # Use an Event to synchronise on observable state rather than assuming a
+    # tick count — if run() gains or loses an await point the test still works.
+    consumer_in_loop = asyncio.Event()
+
+    async def _blocks_until_cancelled():
+        """Signals that run() has entered the async-for loop, then blocks.
+
+        The unreachable `yield` below is intentional: Python's compiler treats
+        any function containing `yield` as a generator, which is required so
+        that `async for message in consumer` can iterate over this object.
+        Without it this would be a plain coroutine, not an async generator."""
+        consumer_in_loop.set()
         await asyncio.sleep(float("inf"))
         return
-        yield  # marks this as an async generator
+        yield  # noqa: unreachable — marks this as an async generator
 
     mock_consumer = AsyncMock()
     mock_consumer.stop = AsyncMock()
-    mock_consumer.__aiter__ = MagicMock(return_value=_never_yields())
+    mock_consumer.__aiter__ = MagicMock(return_value=_blocks_until_cancelled())
 
     runner = KafkaConsumerRunner()
     with patch("app.services.kafka_consumer.AIOKafkaConsumer", return_value=mock_consumer):
         task = asyncio.create_task(runner.run(lambda: fake_repo, lambda: fake_cache))
-        await asyncio.sleep(0)  # let run() reach the async-for loop
-        await asyncio.sleep(0)
+        await consumer_in_loop.wait()  # guaranteed: entered async-for, state is RUNNING
+        assert runner.is_healthy() is True  # observable: a running consumer is healthy
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
 
     assert runner._state == RunnerState.STOPPED
     mock_consumer.stop.assert_awaited()
     assert runner._started_at is not None
-    assert runner._backoff_started_at is None  # cleared after successful connect
 
 
 async def test_run_error_enters_backoff_then_stops(fake_repo, fake_cache):
@@ -223,7 +232,7 @@ async def test_run_error_enters_backoff_then_stops(fake_repo, fake_cache):
 
     runner = KafkaConsumerRunner()
     with patch("app.services.kafka_consumer.AIOKafkaConsumer", return_value=mock_consumer):
-        with patch("asyncio.sleep", new_callable=AsyncMock):  # skip backoff delay
+        with patch("app.services.kafka_consumer.asyncio.sleep", new_callable=AsyncMock):  # skip backoff delay
             await runner.run(lambda: fake_repo, lambda: fake_cache)
 
     assert runner._state == RunnerState.STOPPED

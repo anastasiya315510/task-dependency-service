@@ -91,6 +91,8 @@ class TaskChainCacheService:
         """Delete task_id's chain and the cached chains of every task that is a descendant of task_id."""
         try:
             member_key = self._descendant_chains_key(task_id)
+            # cast: redis-py stubs type smembers as Awaitable[set[Any]] | set[Any].
+            # decode_responses=True (see db.py) guarantees the members are str, not bytes.
             chain_ids: set[str] = await cast(Awaitable[set[str]], self._redis.smembers(member_key))
             keys = [self._key(task_id), member_key]
             for cid in chain_ids:

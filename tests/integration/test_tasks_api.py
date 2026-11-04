@@ -17,12 +17,23 @@ pytestmark = pytest.mark.integration
 def _reset_rate_limiter():
     """Use in-memory rate-limit storage during tests (no Redis dependency).
     A fresh MemoryStorage instance is created before each test so counters
-    never bleed across tests."""
+    never bleed across tests.
+
+    NOTE: slowapi reads self._storage directly (not via a public API), so we
+    replace the private attribute. If a future slowapi upgrade changes the
+    internal attribute name, this fixture will silently stop working — recheck
+    when upgrading slowapi."""
     from limits.storage import MemoryStorage
     from app.dependencies import limiter
 
-    limiter._storage = MemoryStorage()
-    limiter._fallback_storage = MemoryStorage()
+    # slowapi holds the storage reference in three places; all must be replaced
+    # so no Redis connection is attempted during tests.
+    storage = MemoryStorage()
+    limiter._storage = storage
+    limiter._limiter.storage = storage
+    limiter._fallback_storage = storage
+    limiter._fallback_limiter.storage = storage
+    limiter._storage_dead = False
 
 
 async def test_get_task_returns_task(api_client: AsyncClient, fake_repo: FakeTaskRepository):
