@@ -22,6 +22,7 @@ def _reset_rate_limiter():
     from app.dependencies import limiter
 
     limiter._storage = MemoryStorage()
+    limiter._fallback_storage = MemoryStorage()
 
 
 async def test_get_task_returns_task(api_client: AsyncClient, fake_repo: FakeTaskRepository):
