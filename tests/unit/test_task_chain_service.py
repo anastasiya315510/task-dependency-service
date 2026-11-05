@@ -1,10 +1,13 @@
 import fakeredis.aioredis
 import pytest
 
+from app.config import settings
 from app.models import ChainResult, Task
 from app.services.cache_service import TaskChainCacheService
-from app.services.task_chain_service import MAX_CHAIN_DEPTH, TaskChainService
+from app.services.task_chain_service import TaskChainService
 from tests.conftest import FakeTaskRepository
+
+MAX_CHAIN_DEPTH = settings.max_chain_depth
 
 pytestmark = pytest.mark.unit
 

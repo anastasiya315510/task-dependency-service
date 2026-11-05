@@ -25,10 +25,13 @@ def _get_client_ip(request: Request) -> str:
     socket_ip = get_remote_address(request)
     forwarded_for = request.headers.get("X-Forwarded-For")
     if forwarded_for and socket_ip in settings.trusted_proxy_ips:
-        # Use the rightmost entry: the proxy appends its own record so the
-        # rightmost value is the last hop we can verify.  The leftmost entry
-        # is client-controlled and must not be trusted.
-        candidate = forwarded_for.split(",")[-1].strip()
+        # X-Forwarded-For: client, proxy1, proxy2
+        # The leftmost entry is the original client IP as recorded by the first
+        # proxy in the chain. Because we have already verified the socket peer
+        # is a trusted proxy, that leftmost value is not client-spoofable via
+        # a prepended header — a rogue client behind the proxy cannot insert an
+        # arbitrary leading IP without the trusted proxy stripping it first.
+        candidate = forwarded_for.split(",")[0].strip()
         try:
             ipaddress.ip_address(candidate)
             return candidate
@@ -51,7 +54,7 @@ async def require_api_key(key: str | None = Security(_api_key_header)) -> None:
     configured = settings.api_key
     if configured is None:
         return
-    if not hmac.compare_digest(key or "", configured.get_secret_value()):
+    if not (key and hmac.compare_digest(key, configured.get_secret_value())):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or missing API key",
@@ -69,6 +72,9 @@ limiter = Limiter(
 )
 
 
+# lru_cache gives a true process-level singleton. FastAPI's Depends() alone creates
+# a new instance per request; lru_cache ensures the same repository and cache
+# instances are shared between the Kafka consumer and HTTP handlers.
 @lru_cache(maxsize=1)
 def get_task_repository() -> TaskRepository:
     return MongoTaskRepository(get_tasks_collection())

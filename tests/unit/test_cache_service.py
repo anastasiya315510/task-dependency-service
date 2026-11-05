@@ -46,7 +46,7 @@ async def test_get_returns_deserialized_tasks(cache, mock_redis):
     result = await cache.get("t1")
 
     assert result is not None
-    chain, complete, cycle = result
+    chain, complete, cycle, *_ = result
     assert len(chain) == 1
     assert chain[0].id == "t1"
     assert complete is True
@@ -71,7 +71,8 @@ async def test_get_self_heals_corrupt_cache_entry(cache, mock_redis):
 
     await cache.get("t1")
 
-    deleted = set(mock_redis.delete.call_args.args)
+    pipe = mock_redis.pipeline.return_value
+    deleted = {arg for call in pipe.delete.call_args_list for arg in call.args}
     assert "tds:chain:t1" in deleted
     assert "tds:members:t1" in deleted
 
@@ -83,7 +84,8 @@ async def test_get_self_heals_on_missing_key_in_payload(cache, mock_redis):
     result = await cache.get("t1")
 
     assert result is None
-    mock_redis.delete.assert_called()
+    pipe = mock_redis.pipeline.return_value
+    pipe.execute.assert_awaited()
 
 
 async def test_set_stores_serialized_tasks(cache, mock_redis):
@@ -113,7 +115,10 @@ async def test_invalidate_deletes_own_chain_and_members_key(cache, mock_redis):
 
     await cache.invalidate("t1")
 
-    mock_redis.delete.assert_called_once_with("tds:chain:t1", "tds:members:t1")
+    pipe = mock_redis.pipeline.return_value
+    deleted = {arg for call in pipe.delete.call_args_list for arg in call.args}
+    assert "tds:chain:t1" in deleted
+    assert "tds:members:t1" in deleted
 
 
 async def test_invalidate_also_deletes_descendant_chains(cache, mock_redis):
@@ -122,7 +127,8 @@ async def test_invalidate_also_deletes_descendant_chains(cache, mock_redis):
 
     await cache.invalidate("t1")
 
-    deleted = set(mock_redis.delete.call_args.args)
+    pipe = mock_redis.pipeline.return_value
+    deleted = {arg for call in pipe.delete.call_args_list for arg in call.args}
     assert "tds:chain:t1" in deleted
     assert "tds:members:t1" in deleted
     assert "tds:chain:t3" in deleted
@@ -138,19 +144,19 @@ async def test_invalidate_does_not_raise_on_redis_error(cache, mock_redis):
 
 
 async def test_set_passes_ttl_to_redis(cache, mock_redis):
-    from app.services.cache_service import _CHAIN_CACHE_TTL
+    from app.config import settings
 
     tasks = [Task(id="t1", title="Root", parent_task_id=None)]
     await cache.set("t2", ChainResult(tasks=tasks, complete=True, cycle=False))
 
     pipe = mock_redis.pipeline.return_value
     kwargs = pipe.set.call_args.kwargs
-    assert kwargs["ex"] == _CHAIN_CACHE_TTL
+    assert kwargs["ex"] == settings.cache_chain_ttl_seconds
 
 
 async def test_set_registers_ancestor_in_members_index(cache, mock_redis):
     """set() must record that t2's chain includes t1 so invalidate(t1) can clear t2's chain."""
-    from app.services.cache_service import _CHAIN_CACHE_TTL
+    from app.config import settings
 
     chain = [Task(id="t1", title="Root", parent_task_id=None)]
 
@@ -158,7 +164,7 @@ async def test_set_registers_ancestor_in_members_index(cache, mock_redis):
 
     pipe = mock_redis.pipeline.return_value
     pipe.sadd.assert_called_with("tds:members:t1", "t2")
-    pipe.expire.assert_called_with("tds:members:t1", _CHAIN_CACHE_TTL)
+    pipe.expire.assert_called_with("tds:members:t1", settings.cache_chain_ttl_seconds)
 
 
 async def test_set_uses_pipeline_for_all_writes(cache, mock_redis):
@@ -180,14 +186,14 @@ async def test_set_uses_pipeline_for_all_writes(cache, mock_redis):
 
 
 async def test_set_uses_short_ttl_for_incomplete_chain(cache, mock_redis):
-    """Incomplete chains must use _INCOMPLETE_CHAIN_CACHE_TTL, not _CHAIN_CACHE_TTL."""
-    from app.services.cache_service import _INCOMPLETE_CHAIN_CACHE_TTL
+    """Incomplete chains must use cache_incomplete_chain_ttl_seconds, not cache_chain_ttl_seconds."""
+    from app.config import settings
 
     await cache.set("t1", ChainResult(tasks=[], complete=False, cycle=False))
 
     pipe = mock_redis.pipeline.return_value
     kwargs = pipe.set.call_args.kwargs
-    assert kwargs["ex"] == _INCOMPLETE_CHAIN_CACHE_TTL
+    assert kwargs["ex"] == settings.cache_incomplete_chain_ttl_seconds
 
 
 async def test_set_skips_members_index_for_incomplete_chain(cache, mock_redis):
@@ -207,6 +213,7 @@ async def test_get_self_heals_on_valid_json_invalid_task_schema(cache, mock_redi
     result = await cache.get("t1")
 
     assert result is None
-    deleted = set(mock_redis.delete.call_args.args)
+    pipe = mock_redis.pipeline.return_value
+    deleted = {arg for call in pipe.delete.call_args_list for arg in call.args}
     assert "tds:chain:t1" in deleted
     assert "tds:members:t1" in deleted

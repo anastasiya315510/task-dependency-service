@@ -9,7 +9,7 @@ from aiokafka import AIOKafkaConsumer
 from pydantic import ValidationError
 
 from app.config import settings
-from app.log_call import _sanitize
+from app.log_call import sanitize
 from app.models import Task
 from app.repositories.protocols import TaskChainCache, TaskRepository
 
@@ -44,13 +44,13 @@ async def _process_message(raw: bytes, repo: TaskRepository, cache: TaskChainCac
     # isinstance check catches non-string IDs (e.g. 0, false) that would pass a falsy test
     # but fail Pydantic validation, swallowing a producer bug with no actionable error.
     if not isinstance(doc.get("id"), str) or not doc["id"]:
-        logger.error("_process_message — missing or non-string 'id': %s", _sanitize(doc))
+        logger.error("_process_message — missing or non-string 'id': %s", sanitize(doc))
         return
 
     try:
         task = Task(**{k: v for k, v in doc.items() if k in Task.model_fields})
     except (ValidationError, TypeError) as exc:
-        logger.error("_process_message — invalid task document, skipping: %s — %s", _sanitize(doc), exc)
+        logger.error("_process_message — invalid task document, skipping: %s — %s", sanitize(doc), exc)
         return
 
     logger.info("_process_message — processing task %r", task.id)
@@ -82,6 +82,7 @@ class KafkaConsumerRunner:
         self._state: RunnerState = RunnerState.NOT_STARTED
         self._started_at: float | None = None
         self._backoff_started_at: float | None = None
+        self._shutting_down: bool = False
 
     @classmethod
     def _create_for_testing(
@@ -102,6 +103,15 @@ class KafkaConsumerRunner:
         runner._backoff_started_at = backoff_started_at
         return runner
 
+    def shutdown(self) -> None:
+        """Signal that a graceful shutdown is in progress.
+
+        Must be called before cancelling the run() task so that is_healthy()
+        returns True during the shutdown window and load balancers do not log
+        false-positive health failures during rolling deploys.
+        """
+        self._shutting_down = True
+
     def is_healthy(self) -> bool:
         """Returns False if the consumer stopped past the grace period, or has been in BACKOFF too long."""
         if self._state is RunnerState.RUNNING:
@@ -114,7 +124,10 @@ class KafkaConsumerRunner:
             if self._backoff_started_at is None:
                 return True
             return (time.monotonic() - self._backoff_started_at) < _MAX_BACKOFF_SECONDS
-        # STOPPED
+        # STOPPED — healthy during a graceful shutdown (shutdown() was called before cancel),
+        # or within the startup grace period (covers a crash-before-first-connect scenario).
+        if self._shutting_down:
+            return True
         if self._started_at is None:
             return True
         return (time.monotonic() - self._started_at) < _STARTUP_GRACE_SECONDS

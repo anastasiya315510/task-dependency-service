@@ -34,7 +34,7 @@ class FakeTaskRepository:
             if current_id in visited:
                 return ChainResult(ancestors, False, True)
             if depth >= max_depth:
-                return ChainResult(ancestors, False, False)
+                return ChainResult(ancestors, False, False, True)
             visited.add(current_id)
             parent = self._tasks.get(current_id)
             if parent is None:

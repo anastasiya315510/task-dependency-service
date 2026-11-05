@@ -3,7 +3,7 @@ import logging
 
 import pytest
 
-from app.log_call import _sanitize, log_call
+from app.log_call import sanitize as _sanitize, log_call
 from app.models import Task
 
 pytestmark = pytest.mark.unit

@@ -1,12 +1,12 @@
 import logging
 from contextvars import ContextVar
-from typing import Optional
 
 request_id_var: ContextVar[str] = ContextVar("request_id", default="-")
 
 # Tracks the handler we installed so subsequent configure_logging() calls
 # replace only our own handler, leaving third-party handlers (Sentry, etc.) intact.
-_installed_handler: Optional[logging.Handler] = None
+# Using a dict avoids module-level reassignment (global statement).
+_state: dict = {"handler": None}
 
 
 class _RequestIdFilter(logging.Filter):
@@ -29,23 +29,24 @@ def configure_logging(log_level: str = "DEBUG", log_format: str = "text") -> Non
     else:
         handler.setFormatter(
             logging.Formatter(
-                "%(asctime)s %(levelname)-8s %(name)s | %(message)s",
+                "%(asctime)s %(levelname)-8s [%(request_id)s] %(name)s | %(message)s",
                 datefmt="%H:%M:%S",
             )
         )
 
     handler.addFilter(_RequestIdFilter())
 
-    global _installed_handler
     root = logging.getLogger()
     root.setLevel(log_level.upper())
-    # Replace our own handler on re-calls (e.g. format change) but preserve
-    # any third-party handlers (Sentry, etc.) added before configure_logging().
-    if _installed_handler is not None and _installed_handler in root.handlers:
-        root.handlers[root.handlers.index(_installed_handler)] = handler
-    else:
-        root.addHandler(handler)
-    _installed_handler = handler
+    # Always remove our previously-installed handler before adding the new one.
+    # This covers both the normal re-call path (format/level change) and the
+    # edge case where a third-party library removed it — in that case the remove
+    # is a silent no-op and we still add exactly one new handler, avoiding
+    # duplicates even if configure_logging() is called multiple times.
+    if _state["handler"] is not None:
+        root.removeHandler(_state["handler"])
+    root.addHandler(handler)
+    _state["handler"] = handler
 
     # Set third-party logger levels on every call so re-calls with a different
     # log_level are idempotent (NOTSET = inherit from root = no suppression).

@@ -1,13 +1,13 @@
 {
   "info": {
     "name": "Task Dependency Service",
-    "description": "Covers all acceptance criteria for TDS-142.\n\n**Before running:** seed tasks into the service via Kafka:\n\n    python scripts/produce_tasks.py\n\nThis publishes three tasks — t1 (root) → t2 (middle) → t3 (leaf) — to the tasks.events topic. The running service consumes them into MongoDB.\n\nSet the `baseUrl` collection variable to the port the service is listening on (default http://localhost:8001).",
+    "description": "Covers all acceptance criteria for TDS-142.\n\n**Before running:** seed tasks into the service via Kafka:\n\n    python scripts/produce_tasks.py\n\nThis publishes three tasks — t1 (root) → t2 (middle) → t3 (leaf) — to the tasks.events topic. The running service consumes them into MongoDB.\n\nSet the `baseUrl` collection variable to the port the service is listening on (default http://localhost:8000).",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
     {
       "key": "baseUrl",
-      "value": "http://localhost:8001"
+      "value": "http://localhost:8000"
     }
   ],
   "item": [
@@ -64,6 +64,12 @@
                   "});",
                   "pm.test('Second entry is root t1', () => {",
                   "    pm.expect(pm.response.json()[1].id).to.eql('t1');",
+                  "});",
+                  "pm.test('X-Chain-Complete is true — full chain resolved', () => {",
+                  "    pm.expect(pm.response.headers.get('X-Chain-Complete')).to.eql('true');",
+                  "});",
+                  "pm.test('X-Chain-Cycle is false', () => {",
+                  "    pm.expect(pm.response.headers.get('X-Chain-Cycle')).to.eql('false');",
                   "});"
                 ]
               }
@@ -113,6 +119,9 @@
                   "pm.test('200 OK', () => pm.response.to.have.status(200));",
                   "pm.test('Chain is empty array', () => {",
                   "    pm.expect(pm.response.json()).to.eql([]);",
+                  "});",
+                  "pm.test('X-Chain-Complete is true — root has no dependencies', () => {",
+                  "    pm.expect(pm.response.headers.get('X-Chain-Complete')).to.eql('true');",
                   "});"
                 ]
               }
@@ -185,6 +194,12 @@
                   "pm.test('200 OK — no error even though parent is missing', () => pm.response.to.have.status(200));",
                   "pm.test('Partial chain is empty', () => {",
                   "    pm.expect(pm.response.json()).to.eql([]);",
+                  "});",
+                  "pm.test('X-Chain-Complete is false — parent not yet ingested', () => {",
+                  "    pm.expect(pm.response.headers.get('X-Chain-Complete')).to.eql('false');",
+                  "});",
+                  "pm.test('X-Chain-Cycle is false', () => {",
+                  "    pm.expect(pm.response.headers.get('X-Chain-Cycle')).to.eql('false');",
                   "});"
                 ]
               }
@@ -207,6 +222,9 @@
                   "    const chain = pm.response.json();",
                   "    pm.expect(chain).to.have.lengthOf(1);",
                   "    pm.expect(chain[0].id).to.eql('t-parent-late');",
+                  "});",
+                  "pm.test('X-Chain-Complete is true — full chain now resolved', () => {",
+                  "    pm.expect(pm.response.headers.get('X-Chain-Complete')).to.eql('true');",
                   "});"
                 ]
               }

@@ -24,6 +24,17 @@ from app.services.kafka_consumer import KafkaConsumerRunner
 configure_logging(settings.log_level, settings.log_format)
 logger = logging.getLogger(__name__)
 
+if settings.api_key is None:
+    logger.warning("API_KEY is unset — all endpoints are publicly accessible")
+
+if settings.rate_limit_storage_uri == "memory://":
+    logger.warning(
+        "RATE_LIMIT_STORAGE_URI=memory:// — rate-limit counters are per-process. "
+        "In a multi-replica deployment each replica enforces limits independently, "
+        "allowing up to N× the documented rate. "
+        "Set RATE_LIMIT_STORAGE_URI=redis://<host>:6379 for cluster-wide enforcement."
+    )
+
 _SHUTDOWN_TIMEOUT = float(settings.shutdown_timeout_seconds)
 _REQUEST_ID_MAX_LEN = 64
 
@@ -34,19 +45,26 @@ async def lifespan(_app: FastAPI):
     runner = KafkaConsumerRunner()
     _app.state.kafka_runner = runner
     try:
+        col = get_tasks_collection()
         await asyncio.wait_for(
-            get_tasks_collection().create_index("id", unique=True),
+            asyncio.gather(
+                col.create_index("id", unique=True),
+                col.create_index("parent_task_id"),
+            ),
             timeout=10.0,
         )
     except (asyncio.TimeoutError, PyMongoError) as exc:
         logger.error("MongoDB index creation failed — continuing startup: %s", exc)
     else:
-        logger.info("MongoDB index on 'id' ensured")
+        logger.info("MongoDB indexes on 'id' and 'parent_task_id' ensured")
     task = asyncio.create_task(
         runner.run(get_task_repository, get_cache_service)
     )
     await asyncio.sleep(0)  # yield to event loop so the consumer task starts
     yield
+    # Signal graceful shutdown before cancelling so is_healthy() returns True
+    # during the drain window — prevents false-positive 503s on load balancers.
+    runner.shutdown()
     task.cancel()
     try:
         await asyncio.wait_for(
@@ -64,6 +82,8 @@ async def lifespan(_app: FastAPI):
 
 app = FastAPI(title="Task Dependency Service", lifespan=lifespan)
 app.state.limiter = limiter
+# cast: slowapi stubs _rate_limit_exceeded_handler with a non-Optional Request,
+# but FastAPI's add_exception_handler signature is broader — the cast is safe.
 app.add_exception_handler(RateLimitExceeded, cast(Any, _rate_limit_exceeded_handler))
 app.include_router(health_router)
 app.include_router(tasks_router)
@@ -72,17 +92,16 @@ app.include_router(tasks_router)
 @app.middleware("http")
 async def request_id_middleware(request: Request, call_next):
     raw_rid = request.headers.get("X-Request-ID", "")
-    if len(raw_rid) > _REQUEST_ID_MAX_LEN:
+    # Strip non-printable and non-ASCII bytes first (prevents header injection via CRLF),
+    # then truncate so a long ID with many non-printable chars isn't silently dropped.
+    cleaned = "".join(c for c in raw_rid if 0x20 <= ord(c) < 0x7F).strip()
+    if len(cleaned) > _REQUEST_ID_MAX_LEN:
         logger.warning(
             "X-Request-ID truncated from %d to %d chars — trace correlation may break",
-            len(raw_rid),
+            len(cleaned),
             _REQUEST_ID_MAX_LEN,
         )
-    # Strip non-printable and non-ASCII bytes to prevent header injection via CRLF.
-    rid = (
-        "".join(c for c in raw_rid[:_REQUEST_ID_MAX_LEN] if 0x20 <= ord(c) < 0x7F).strip()
-        or uuid.uuid4().hex[:12]
-    )
+    rid = cleaned[:_REQUEST_ID_MAX_LEN] or uuid.uuid4().hex[:12]
     request_id_var.set(rid)
     response = await call_next(request)
     response.headers["X-Request-ID"] = rid

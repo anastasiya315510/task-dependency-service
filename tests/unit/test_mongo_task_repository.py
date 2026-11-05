@@ -92,7 +92,7 @@ async def test_find_ancestor_chain_returns_empty_complete_for_root_task():
     # $graphLookup returns no ancestors for a root task (parent_task_id is None)
     repo = _make_repo_with_aggregate([{"parent_task_id": None, "_ancestors": []}])
 
-    ancestors, complete, cycle = await repo.find_ancestor_chain("t1", 100)
+    ancestors, complete, cycle, *_ = await repo.find_ancestor_chain("t1", 100)
 
     assert ancestors == []
     assert complete is True
@@ -103,7 +103,7 @@ async def test_find_ancestor_chain_returns_empty_incomplete_when_parent_missing(
     # parent_task_id is set but $graphLookup found nothing (parent not ingested yet)
     repo = _make_repo_with_aggregate([{"parent_task_id": "t0-missing", "_ancestors": []}])
 
-    ancestors, complete, cycle = await repo.find_ancestor_chain("t1", 100)
+    ancestors, complete, cycle, *_ = await repo.find_ancestor_chain("t1", 100)
 
     assert ancestors == []
     assert complete is False
@@ -119,7 +119,7 @@ async def test_find_ancestor_chain_returns_ordered_ancestors():
         ],
     }])
 
-    ancestors, complete, cycle = await repo.find_ancestor_chain("t3", 100)
+    ancestors, complete, cycle, *_ = await repo.find_ancestor_chain("t3", 100)
 
     assert [a.id for a in ancestors] == ["t2", "t1"]
     assert complete is True
@@ -137,7 +137,7 @@ async def test_find_ancestor_chain_detects_cycle():
         ],
     }])
 
-    ancestors, complete, cycle = await repo.find_ancestor_chain("t3", 100)
+    ancestors, complete, cycle, *_ = await repo.find_ancestor_chain("t3", 100)
 
     assert cycle is True
     assert complete is False
@@ -158,7 +158,7 @@ async def test_find_ancestor_chain_returns_partial_result_for_corrupt_ancestor()
     result = await repo.find_ancestor_chain("t3", 100)
 
     assert result is not None
-    ancestors, complete, cycle = result
+    ancestors, complete, cycle, *_ = result
     # Only t2 (before the corrupt t1) should be returned
     assert len(ancestors) == 1
     assert ancestors[0].id == "t2"
@@ -179,8 +179,9 @@ async def test_find_ancestor_chain_reports_depth_limit():
         "_ancestors": ancestor_docs,
     }])
 
-    ancestors, complete, cycle = await repo.find_ancestor_chain("t0", max_depth)
+    result = await repo.find_ancestor_chain("t0", max_depth)
 
-    assert len(ancestors) == max_depth
-    assert complete is False
-    assert cycle is False
+    assert len(result.tasks) == max_depth
+    assert result.complete is False
+    assert result.cycle is False
+    assert result.depth_limited is True

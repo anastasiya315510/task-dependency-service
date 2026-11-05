@@ -4,7 +4,7 @@ import logging
 from typing import Any, Callable
 
 
-def _sanitize(value: Any) -> str:
+def sanitize(value: Any) -> str:
     """Safe repr — objects with an 'id' field are reduced to avoid logging PII.
 
     Assumption: any future domain object that carries PII must have both 'id'
@@ -12,18 +12,20 @@ def _sanitize(value: Any) -> str:
     don't match any guard fall through to repr() — add a guard before adding
     new domain types that contain user-facing strings.
     """
-    # Duck-typed check: any object with 'id' and 'title' (e.g. Task) is treated
-    # as a domain entity. No import of app.models keeps this module dependency-free.
+    # Duck-typed check: match objects that look like Task (id + title + parent_task_id).
+    # The three-attribute guard is specific enough to avoid false positives on
+    # framework objects (e.g. Request) that also carry 'id' or 'title'.
+    # No import of app.models keeps this module free of domain dependencies.
     if isinstance(value, bytes):
         return f"<bytes len={len(value)}>"
-    if hasattr(value, "id") and hasattr(value, "title"):
+    if hasattr(value, "id") and hasattr(value, "title") and hasattr(value, "parent_task_id"):
         return f"{type(value).__name__}(id={value.id!r})"
     if isinstance(value, dict) and "id" in value:
         return f"dict(id={value['id']!r}, ...)"
     if isinstance(value, list):
         return f"[{len(value)} item(s)]"
     if isinstance(value, tuple):
-        return f"({', '.join(_sanitize(v) for v in value)})"
+        return f"({', '.join(sanitize(v) for v in value)})"
     return repr(value)
 
 
@@ -63,13 +65,13 @@ def log_call(func: Callable | None = None, *, level: int = logging.DEBUG) -> Cal
         @functools.wraps(fn)
         async def wrapper(*args: Any, **kwargs: Any) -> Any:
             positional = args[1:] if _is_method else args
-            parts = [_sanitize(a) for a in positional] + [
-                f"{k}={_sanitize(v)}" for k, v in kwargs.items()
+            parts = [sanitize(a) for a in positional] + [
+                f"{k}={sanitize(v)}" for k, v in kwargs.items()
             ]
             context = f"({', '.join(parts)})" if parts else "()"
             _logger.log(level, "-> %s%s", _name, context)
             result = await fn(*args, **kwargs)
-            _logger.log(level, "<- %s%s = %s", _name, context, _sanitize(result))
+            _logger.log(level, "<- %s%s = %s", _name, context, sanitize(result))
             return result
 
         return wrapper

@@ -32,3 +32,7 @@ class ChainResult(NamedTuple):
     tasks: list[Task]
     complete: bool
     cycle: bool = False
+    # True when the chain was cut short by the configured depth limit rather than
+    # by a genuinely missing parent.  Callers should not retry when this is True —
+    # the chain is structurally longer than the service is configured to traverse.
+    depth_limited: bool = False

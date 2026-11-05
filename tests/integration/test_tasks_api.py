@@ -32,6 +32,11 @@ def _reset_rate_limiter():
     storage = MemoryStorage()
     limiter._storage = storage
     limiter._limiter.storage = storage
+    # Guard: if a future slowapi upgrade renames these private attributes the
+    # patch above silently stops working and counter state bleeds across tests.
+    assert limiter._storage is storage, (
+        "slowapi internals changed — update _reset_rate_limiter fixture after upgrading slowapi"
+    )
     # Reset the dead-storage flag so slowapi doesn't route to _fallback_storage
     # instead of our fresh MemoryStorage. No-op with memory:// (flag stays False),
     # but required when RATE_LIMIT_STORAGE_URI=redis://... is set locally and Redis
@@ -231,6 +236,59 @@ async def test_health_returns_503_when_kafka_consumer_unhealthy(api_client: Asyn
     assert "kafka_consumer" in response.json()["detail"]
 
 
+async def test_health_live_always_returns_200(api_client: AsyncClient):
+    """Liveness probe must return 200 regardless of backing-service state."""
+    response = await api_client.get("/health/live")
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok"}
+
+
+async def test_health_live_returns_200_when_mongo_down(api_client: AsyncClient):
+    """Liveness probe must NOT check dependencies — it should stay up during outages."""
+    with patch("app.routes.health.get_tasks_collection") as mock_col:
+        mock_col.return_value.database.command = AsyncMock(
+            side_effect=PyMongoError("unreachable")
+        )
+        response = await api_client.get("/health/live")
+    assert response.status_code == 200
+
+
+async def test_health_returns_503_when_redis_unavailable(api_client: AsyncClient):
+    with (
+        patch("app.routes.health.get_tasks_collection") as mock_col,
+        patch("app.routes.health.get_redis") as mock_redis,
+        patch.object(KafkaConsumerRunner, "is_healthy", return_value=True),
+    ):
+        mock_col.return_value.database.command = AsyncMock(return_value={"ok": 1})
+        mock_redis.return_value.ping = AsyncMock(side_effect=Exception("redis down"))
+
+        response = await api_client.get("/health")
+
+    assert response.status_code == 503
+    assert "redis" in response.json()["detail"]
+
+
+async def test_health_returns_503_on_ping_timeout(api_client: AsyncClient):
+    import asyncio as _asyncio
+
+    async def slow_command(*_a, **_kw):
+        await _asyncio.sleep(10)
+
+    with (
+        patch("app.routes.health.get_tasks_collection") as mock_col,
+        patch("app.routes.health.get_redis") as mock_redis,
+        patch.object(KafkaConsumerRunner, "is_healthy", return_value=True),
+        patch("app.routes.health.asyncio.wait_for", side_effect=_asyncio.TimeoutError),
+    ):
+        mock_col.return_value.database.command = AsyncMock(side_effect=slow_command)
+        mock_redis.return_value.ping = AsyncMock(return_value=True)
+
+        response = await api_client.get("/health")
+
+    assert response.status_code == 503
+    assert "timeout" in response.json()["detail"].lower()
+
+
 # --- API key authentication ---
 
 async def test_api_key_absent_returns_401(api_client: AsyncClient):
@@ -262,6 +320,31 @@ async def test_request_id_truncated_to_max_length(api_client: AsyncClient, fake_
 
     assert response.status_code == 200
     assert len(response.headers["X-Request-ID"]) == 64
+
+
+# --- Depth limiting ---
+
+async def test_get_chain_depth_limited_header(api_client: AsyncClient, fake_repo: FakeTaskRepository):
+    """X-Chain-Depth-Limited must be true when the chain is cut at max_depth."""
+    from unittest.mock import AsyncMock, patch
+    from app.models import ChainResult
+
+    truncated = ChainResult(
+        tasks=[Task(id="t2", title="Middle", parent_task_id="t1")],
+        complete=False,
+        cycle=False,
+        depth_limited=True,
+    )
+    with patch(
+        "app.services.task_chain_service.TaskChainService.get_chain",
+        new=AsyncMock(return_value=truncated),
+    ):
+        fake_repo._tasks["t3"] = Task(id="t3", title="Leaf", parent_task_id="t2")
+        response = await api_client.get("/tasks/t3/chain")
+
+    assert response.status_code == 200
+    assert response.headers["X-Chain-Depth-Limited"] == "true"
+    assert response.headers["X-Chain-Complete"] == "false"
 
 
 # --- Rate limiting ---

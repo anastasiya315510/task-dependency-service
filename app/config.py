@@ -1,7 +1,7 @@
 import ipaddress
 from typing import Literal
 
-from pydantic import SecretStr, field_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -22,6 +22,12 @@ class Settings(BaseSettings):
 
     cache_chain_ttl_seconds: int = 3600  # complete chains: 1 hour
     cache_incomplete_chain_ttl_seconds: int = 30  # incomplete chains: 30 seconds
+
+    # Maximum number of ancestor hops $graphLookup will traverse.
+    # Raise this for unusually deep task hierarchies; lower it to cap query cost.
+    # Chains longer than this limit will be returned as incomplete
+    # (X-Chain-Complete: false, X-Chain-Depth-Limited: true).
+    max_chain_depth: int = Field(default=100, ge=1, le=1000)
 
     # API key for endpoint authentication. Set via API_KEY env var.
     # When unset (default), all endpoints are publicly accessible — suitable for
@@ -57,6 +63,15 @@ class Settings(BaseSettings):
     # IP when running behind a proxy so rate limiting uses the real client IP.
     # Example env var: TRUSTED_PROXY_IPS='["10.0.0.1", "10.0.0.2"]'
     trusted_proxy_ips: set[str] = set()
+
+    @model_validator(mode="after")
+    def _ttl_order(self) -> "Settings":
+        if self.cache_incomplete_chain_ttl_seconds > self.cache_chain_ttl_seconds:
+            raise ValueError(
+                "cache_incomplete_chain_ttl_seconds must not exceed "
+                "cache_chain_ttl_seconds — incomplete chains should expire sooner"
+            )
+        return self
 
     @field_validator("trusted_proxy_ips", mode="after")
     @classmethod

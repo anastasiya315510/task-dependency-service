@@ -1,15 +1,22 @@
 import logging
 
+from app.config import settings
 from app.log_call import log_call
 from app.models import ChainResult
 from app.repositories.protocols import TaskChainCache, TaskRepository
 
 logger = logging.getLogger(__name__)
 
-MAX_CHAIN_DEPTH = 100  # Safety cap; prevents runaway $graphLookup on malformed data
-
 
 class TaskChainService:
+    """Resolves task ancestor chains with read-through caching.
+
+    Complete chains (resolved to root) are cached with a long TTL.
+    Incomplete chains (missing parents or depth-limited) use a short TTL to
+    reduce MongoDB pressure during Kafka ingestion lag.
+    Cycle results are NOT cached — they indicate corrupted data that should be fixed.
+    """
+
     def __init__(self, repo: TaskRepository, cache: TaskChainCache):
         self._repo = repo
         self._cache = cache
@@ -27,7 +34,7 @@ class TaskChainService:
         if cached is not None:
             return cached
 
-        result = await self._repo.find_ancestor_chain(task_id, MAX_CHAIN_DEPTH)
+        result = await self._repo.find_ancestor_chain(task_id, settings.max_chain_depth)
         if result is None:
             logger.debug("get_chain %r — task not found", task_id)
             return None

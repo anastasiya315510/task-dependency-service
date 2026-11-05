@@ -24,7 +24,13 @@ async def test_lifespan_creates_mongo_index_on_startup():
         async with lifespan(FastAPI()):
             pass
 
-        mock_col.return_value.create_index.assert_awaited_once_with("id", unique=True)
+        calls = mock_col.return_value.create_index.await_args_list
+        assert any(c == (("id",), {"unique": True}) for c in calls), (
+            "Expected create_index('id', unique=True) to have been awaited"
+        )
+        assert any(c == (("parent_task_id",), {}) for c in calls), (
+            "Expected create_index('parent_task_id') to have been awaited"
+        )
 
 
 async def test_lifespan_starts_kafka_consumer_on_startup():
